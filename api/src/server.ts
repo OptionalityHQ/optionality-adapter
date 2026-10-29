@@ -7,18 +7,15 @@
  *
  *   node api/src/server.ts --session data/chain-session.json --engine http://127.0.0.1:8787
  *
- * The chain client is the existing `sim/chain.mjs` for now. That is the last
- * piece of JavaScript left in the trading path, and it is a transport: signing
- * and JSON-RPC, no product rules. Phase 5 replaces the engine beside it.
+ * The chain client is `chain.ts`: signing and JSON-RPC, no product rules.
  */
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
-// @ts-ignore -- the existing JS transport, typed by the interface below.
-import { Chain } from "../../sim/chain.mjs";
+import { Chain } from "./chain.ts";
 import { type Asset, type Kind, type LadderSide, Tape, amount, fromUnits } from "./gateway.ts";
 import { type EngineMarks, type Views, type Registry, gatherState, registryForExpiry, seriesStrike } from "./gather.ts";
-import { type Call, planAction } from "./actions.ts";
-import { marksFromEngine, normalizeBids, normalizeBook, normalizePool, normalizePositions } from "./gateway.ts";
+import { type Call, describe, planAction } from "./actions.ts";
+import { marksFromEngine, mergeSide, normalizeBids, normalizeBook, normalizePool, normalizePositions } from "./gateway.ts";
 
 const arg = (name: string, fallback: string): string => {
   const argv = process.argv;
@@ -32,18 +29,8 @@ const SESSION = arg("--session", "data/chain-session.json");
 const DEMO = arg("--demo", "demo/index.html");
 const STREAM_MS = Number(arg("--stream-ms", "700"));
 
-interface ChainLike {
-  options: string;
-  token: string;
-  id(role: string): string;
-  view(method: string, args?: Record<string, unknown>): Promise<unknown>;
-  call(role: string, method: string, args: Record<string, unknown>, opts?: { gas?: bigint }): Promise<{ hash: string; value: unknown }>;
-  ftBalance(account: string): Promise<number>;
-  account(role: string): Promise<unknown>;
-}
-
 /** The reads `gather.ts` asks for, mapped onto the contract's own names. */
-function viewsFor(chain: ChainLike, session: { contracts: { options: string } }): Views {
+function viewsFor(chain: Chain): Views {
   return {
     async seriesIds() {
       const stats = (await chain.view("stats")) as { series_count: number };
@@ -104,8 +91,13 @@ async function engineRows(asset: Asset): Promise<{ rows: Array<{ strike: number;
       askCount: nullable("askCount") ?? 0,
       bestBidId: nullable("bidId"),
       bestOfferId: nullable("offerId"),
-      poolAsk: null,
-      poolBid: null,
+      // The engine's own two-sided price, and it says "no price" as a null: a
+      // wing worth less than one unit, or a spread whose loaded entry costs more
+      // than it can ever pay out, is not a quote of 0.00. Collapsing that to 0
+      // would hand the planner a free ticket and the screen a price no click can
+      // fill, so the null travels on and only the display falls back to 0.
+      poolAsk: nullable("ask"),
+      poolBid: nullable("bid"),
       takeAsk: null,
       takeAskFrom: null,
       seriesId: null,
@@ -153,8 +145,8 @@ async function main(): Promise<void> {
     contracts: { options: string; token: string };
     roles: Record<string, { account: string }>;
   };
-  const chain = (await Chain.connect(SESSION)) as unknown as ChainLike;
-  const views = viewsFor(chain, session);
+  const chain = await Chain.connect(SESSION);
+  const views = viewsFor(chain);
   const you = chain.id("you");
   const vault = session.contracts.options;
   // The tape reads the venue the only way a gateway can: by watching what the
@@ -191,9 +183,20 @@ async function main(): Promise<void> {
     const registry: Registry = registryForExpiry(pairs, expiry, asset);
     const { rows } = await engineRows(asset);
     const marks = marksFromEngine(rows);
-    const side = marks.side(asset, kind, strike);
     const seriesId = registry.idFor(asset, kind, strike);
     const info = seriesId === null ? null : registry.info(seriesId);
+    // Merged the same way the payload's row is: the engine's model, the book on
+    // chain, and which of the two a taker would actually pay. Planning from the
+    // model alone would route every order to the vault when a person had already
+    // posted cheaper, and would let a post-only or stale-limit check compare
+    // against a field that was never there.
+    const side = mergeSide(
+      marks.side(asset, kind, strike),
+      seriesId === null ? [] : normalizeBook(await views.getBook(seriesId, 50)),
+      seriesId === null ? [] : normalizeBids(await views.getBids(seriesId, 50)),
+      seriesId,
+      info?.settlement ?? "open",
+    );
     return {
       you,
       vault,
@@ -211,7 +214,7 @@ async function main(): Promise<void> {
               expiryNs: info.expiryNs,
               settlement: info.settlement,
             },
-      side: side === null ? null : { ...side, seriesId, settlement: info?.settlement ?? "open" },
+      side,
       mid: side === null ? null : side.mark,
       positions: normalizePositions(await views.getPositions(you), vault),
     };
@@ -345,7 +348,11 @@ async function main(): Promise<void> {
           });
           json(200, {
             ok: true,
-            message: calls.length ? `${calls[0].method} · ${results.length} tx` : "nothing to do",
+            // The planner's own sentence, in the trader's words rather than the
+            // method name: "bought 2x from the pool at 0.0520", not "pool_buy".
+            message: calls.length
+              ? `${describe(calls, parsed as never, context as never)} · ${results.length} tx`
+              : "nothing to do",
             hashes: results.map((entry) => entry.hash),
             values: results.map((entry) => entry.value),
           });

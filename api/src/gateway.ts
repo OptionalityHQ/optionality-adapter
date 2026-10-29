@@ -969,8 +969,11 @@ export function marksFromEngine(rows: Array<{ strike: number; put: LadderSide | 
       gamma: side.gamma,
       vega: side.vega,
       theta: side.theta,
-      poolAsk: side.ask,
-      poolBid: side.bid,
+      // The engine's maker price for this cell, null when it is not quoting
+      // one. Not `ask`: that is the display number and reads 0 when there is
+      // nothing to show.
+      poolAsk: side.poolAsk ?? null,
+      poolBid: side.poolBid ?? null,
       low: side.low,
       high: side.high,
     };

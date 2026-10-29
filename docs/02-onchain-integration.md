@@ -4,25 +4,25 @@
 
 ## The chain path that works now
 
-Three commands, all local, no keys of yours and no testnet:
+One command, all local, no keys of yours and no testnet:
 
 ```bash
-bash scripts/build.sh                              # three .wasm + their sha256
-cargo run -p chain-host -- --out data/chain-session.json --spot 2350
-node sim/chain-demo.mjs                            # full lifecycle, prints tx hashes
+bash scripts/venue.sh start     # build.sh, then engine → chain-host → gateway
 ```
 
 `chain-host` boots a real NEAR sandbox (the same runtime a validator runs),
 deploys `bounded_options`, `mock_ft` and `price_oracle`, creates nine accounts
 with real keypairs, funds each with 5,000,000 USDT, deposits them into the
 market, and writes `data/chain-session.json` with the RPC address and the keys.
-It then parks: the sandbox lives and dies with that process.
+It then lists the series the engine asks for and parks: the sandbox lives and
+dies with that process.
 
-`sim/chain.mjs` is the Node client — `near-api-js` signing against
-`127.0.0.1:<port>`. `sim/chain-demo.mjs` runs two lifecycles through it: one where
-the counterparty is a person, one where it is the pool.
+[`api/src/chain.ts`](../near-mvp/api/src/chain.ts) is the Node client —
+`near-api-js` signing against `127.0.0.1:<port>`. The gateway runs every
+lifecycle through it: one where the counterparty is a person resting a quote,
+one where it is the pool.
 Evidence: `evidence/chain/2026-10-29-onchain-demo.txt`,
-`evidence/chain/vault-lifecycle.txt`.
+`evidence/chain/vault-lifecycle.txt`, `evidence/chain/ladder-listed.txt`.
 
 | Step | Contract call | What the chain said |
 | --- | --- | --- |
@@ -70,7 +70,7 @@ contract panics at the moment it attaches more static gas than it was given, and
 because that is before any state write, the debit, the withdrawal record and the
 event are all discarded — `stats.withdrawal_count` stayed 0 and custody never
 moved. Anything that chains a transfer needs at least 45 Tgas at the call site, so
-`chain.mjs` passes 90 for it. `pool_buy`, `pool_close` and `settle_ticket` are
+`chain.ts` passes 90 for it. `pool_buy`, `pool_close` and `settle_ticket` are
 single-hop and cost 2–5 Tgas.
 
 ## Argument encoding, because it bites
@@ -83,7 +83,7 @@ The SDK's JSON is not uniform and the failure is a panic inside the contract:
   rejected, and a nanosecond timestamp only loses ~256 ns to double rounding.
 - `get_positions` takes `account`, `get_balance` takes `account_id`.
 
-`sim/chain.mjs` keeps those rules in one place (`encode`, and the two readers).
+`api/src/chain.ts` keeps those rules in one place (`encode`, and the two readers).
 
 ## What is still off-chain, and why that is the right split
 
@@ -91,14 +91,14 @@ The SDK's JSON is not uniform and the failure is a panic inside the contract:
 | --- | --- | --- |
 | Order book, matching, escrow, settlement, custody | **contract** | This is the product. It must not be trusted. |
 | Price index (median of Binance/Coinbase/Bybit prints) | off-chain feed → `report` | A contract cannot open a websocket. The feed is the oracle's input, and `min_confidence_bps` is what stops one venue from settling the market. |
-| Quote *decisions* (what makers should post, at what price) | off-chain bots | Deciding a price costs no trust; publishing it does. On a real venue this is a market maker's own infrastructure. |
+| Quote *decisions* (what the pool writes, at what price) | the Rust engine | Deciding a price costs no trust; publishing it does. The engine calls `core::fees`, the same module the contract calls, and the contract still refuses anything outside its bounds. |
 | UI, ladder rendering, PnL display | browser | Presentation. |
 
-The daemon (`sim/market-daemon.mjs`) runs the same semantics in JavaScript so the
-screen can move at 50 TPS; `sim/test/parity.test.mjs` asserts it agrees with the
-contract on every path, including `close_ticket`. That is the seam the gateway
-crosses: same `/state` + `/action` API, `Chain.call` underneath instead of the JS
-ledger.
+That was the seam the JavaScript ledger sat on, and the gateway crossed it:
+same `/state` + `/action` API, `Chain.call` underneath instead of a book in
+memory. The ledger and its parity tests are deleted — one implementation left,
+and the page cannot disagree with the chain because it has nothing to compute
+with.
 
 ## The next step is a decision, not a task
 

@@ -7,12 +7,13 @@ anything that moves bytes.**
 
 ## The one structural idea
 
-Today the market exists twice: `contracts/bounded-options/src/accounting.rs` in
+The market used to exist twice: `contracts/bounded-options/src/accounting.rs` in
 Rust and `sim/{accounting,pricing,market}.mjs` in JavaScript, kept in agreement by
 `sim/test/parity.test.mjs`. That is a tax paid forever — every rule must be written
-twice and tested against drift.
+twice and tested against drift. The JavaScript half was deleted on 30 October 2026,
+after the engine and gateway could do everything it did.
 
-Fix: one `core` crate, compiled twice.
+The fix was one `core` crate, compiled twice.
 
 ```
         ┌─────────────────────────────┐
@@ -44,9 +45,9 @@ core/                  Rust crate, no near-sdk, no float, no I/O
   src/consolation.rs   loss weights, pity multiplier, epoch draw ← landed, unwired
 
 surface/               Rust crate, engine-only: the pricing model, in f64
-  src/pricing.rs       Black-Scholes spread value, smile, greeks   ← from sim/pricing.mjs
+  src/pricing.rs       Black-Scholes spread value, smile, greeks   ← replaced sim/pricing.mjs
   src/index.rs         median of venues, dispersion, confidence,
-                       the contract's acceptance filter            ← sim/feed.mjs ported
+                       the contract's acceptance filter            ← replaced sim/feed.mjs
 
 contracts/bounded-options   depends on core; keeps only state, auth and storage
 contracts/mock-ft           unchanged
@@ -111,8 +112,9 @@ Two rules that only became visible once the contract called this code:
 Nine bot accounts and the taker-rate loop (the pool is always on the other side),
 the per-series book as a *requirement* (it stays as an optional overlay for makers
 who want to beat the pool's price), `sim/test/parity.test.mjs` (replaced by shared
-code), and the `—`-filled IV columns that only exist because a thin book has no
-quote to solve against.
+code, and now deleted with the code it was testing), and the fake IVs that only
+existed because a thin book has no quote to solve against — a cell with no implied
+vol prints `—` because there genuinely is none.
 
 ## Build order
 
@@ -121,11 +123,11 @@ Each phase lands with tests and is useful alone; nothing waits for the whole set
 | # | component | done when | status |
 | --- | --- | --- | --- |
 | 1 | `core::accounting` | contract's own tests pass against it, unchanged results | ✅ moved; the contract's copy deleted |
-| 2 | `surface::pricing` | matches `sim/pricing.mjs` over a strike sweep, integer premium exact | ✅ 72 vectors, 1e-9 tolerance, exact on the boundary |
+| 2 | `surface::pricing` | matches the retired `sim/pricing.mjs` over a strike sweep, integer premium exact | ✅ 72 frozen vectors, 1e-9 tolerance, exact on the boundary |
 | 3 | `core::fees` + `core::pool` | capacity can never be exceeded, and custody is conserved under any fill sequence | ✅ 20 tests, incl. a 500-step deterministic sequence |
 | 4 | contract depends on `core` | book tests still green *and* a vault lifecycle runs on a real chain | ✅ 62 Rust tests then (125 now), 18 on-chain txs, custody conserved |
 | 5 | `engine` | the screen trades against a live pool at real prices, zero bots | ✅ 44 tests, live tape, 72 series listed from `/plan`, and a settlement that pays: one feed print fixes the whole grid and a ticket settles out of `equity` ([evidence](../evidence/chain/settlement-live.txt)) |
-| 6 | `api` + `web` in TS | the journey script passes end to end against the TS stack | ◐ gateway runs on 8790 with 42 tests; the screen still reads the JS daemon on 8787 |
+| 6 | `api` + `web` in TS | the journey script passes end to end against the TS stack | ✅ gateway on 8790 with 46 tests, serving the page; the JS ledger it replaced is deleted and the screen reads only the gateway |
 | 7 | `consolation` + economics harness | 3,000 simulated epochs show the pool solvent and farming still −EV | ◐ `core::consolation` done — the −EV bound is a function and 500 random loss splits prove it; the harness and the contract wiring are open |
 
 Phase 4 landed the vault side of the contract: `pool_buy`, `pool_close`,

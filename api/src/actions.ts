@@ -131,6 +131,17 @@ function planBuy(context: Context, body: ActionBody): Call[] {
       },
     ];
   }
+  // The page priced its limit from a read one poll old, and only the vault may
+  // write this one. Signing anyway sends a budget the contract will call too
+  // small, and "premium above the budget" is a bad way to tell someone the
+  // market moved — or that there was never a price to take.
+  const now = context.side?.takeAsk;
+  if (now === null || now === undefined) {
+    throw new Error("nothing is offering this spread: the vault will not write it and no one is resting one");
+  }
+  if (limit < now) {
+    throw new Error(`the ask moved to ${now.toFixed(4)} · your limit was ${limit.toFixed(4)}`);
+  }
   if (context.side?.takeAskFrom === "book" && context.side.bestOfferId !== null) {
     return [
       {
@@ -165,67 +176,83 @@ function planBuy(context: Context, body: ActionBody): Call[] {
 }
 
 /**
- * A sell closes a position. Against the vault that means `pool_close` at the
- * mark — the vault buys the ticket back and destroys it. Against a person it
- * means selling into a whole resting bid, because the contract's collateral
- * stays where it is and only the holder changes.
+ * A sell. Two different things wear the same word, and the plan has to tell them
+ * apart: naming a ticket hands one back (to the vault, or to a bidder), and
+ * naming none *writes* one — into a resting bid if one pays, otherwise as an
+ * offer that waits.
  */
 function planSell(context: Context, body: ActionBody): Call[] {
   const series = requireSeries(context, body);
-  if (body.postOnly) {
+  const limit = Number(body.limit ?? 0);
+  const contracts = contractsOf(body.quantity);
+  const offer = (): Call => {
     requireOpen(series);
+    return {
+      contract: "options",
+      method: "post_offer",
+      args: {
+        series_id: series.seriesId,
+        quantity: toUnits(contracts).toString(),
+        premium: toUnits(limit * contracts).toString(),
+        taker: null,
+        expires_ns: Math.min(series.expiryNs, Date.now() * 1e6 + 3_600e9),
+      },
+      tgas: TGAS,
+    };
+  };
+  if (body.postOnly) {
     const bestBid = context.side?.bid ?? 0;
-    const limit = Number(body.limit);
     if (bestBid > 0 && limit <= bestBid) {
       throw new Error(`post-only offer ${limit.toFixed(2)} would cross the bid ${bestBid.toFixed(2)}`);
     }
-    const contracts = contractsOf(body.quantity);
+    return [offer()];
+  }
+  const ticket = Number(body.ticket);
+  if (Number.isInteger(ticket)) {
+    const held = context.positions.find(
+      (row) => row.ticketId === ticket && row.side === "long" && row.againstPool,
+    );
+    if (held) {
+      if (context.mid === null || context.mid === undefined) {
+        throw new Error("no mark to close this ticket against");
+      }
+      return [
+        {
+          contract: "options",
+          method: "pool_close",
+          args: { ticket_id: ticket, mid_units: toUnits(context.mid).toString() },
+          tgas: TGAS,
+        },
+      ];
+    }
+    // Not the vault's: hand it to a bidder instead, at or above the trader's floor.
     return [
       {
         contract: "options",
-        method: "post_offer",
+        method: "close_ticket",
         args: {
-          series_id: series.seriesId,
-          quantity: toUnits(contracts).toString(),
-          premium: toUnits(limit * contracts).toString(),
-          taker: null,
-          expires_ns: Math.min(series.expiryNs, Date.now() * 1e6 + 3_600e9),
+          ticket_id: ticket,
+          min_unit_premium: limit > 0 ? toUnits(limit).toString() : null,
         },
         tgas: TGAS,
       },
     ];
   }
-  const ticket = Number(body.ticket);
-  if (!Number.isInteger(ticket)) throw new Error("a sell names a ticket");
-  const held = context.positions.find(
-    (row) => row.ticketId === ticket && row.side === "long" && row.againstPool,
-  );
-  const floor = Number(body.limit ?? 0);
-  if (held) {
-    if (context.mid === null || context.mid === undefined) {
-      throw new Error("no mark to close this ticket against");
-    }
-    return [
-      {
-        contract: "options",
-        method: "pool_close",
-        args: { ticket_id: ticket, mid_units: toUnits(context.mid).toString() },
-        tgas: TGAS,
-      },
-    ];
+  // No ticket named, so this sell writes one. A resting bid that pays the price
+  // asked is the counterparty already standing there: the contract hands the
+  // writer the bidder's premium and posts the width as collateral. With nothing
+  // to take, the order rests as an offer instead.
+  const bestBidId = context.side?.bestBidId ?? null;
+  const bestBid = context.side?.bid ?? 0;
+  const bestBidSize = context.side?.bidSize ?? 0;
+  if (limit <= 0) throw new Error("writing a ticket needs a price");
+  // `fill_bid` takes the whole bid, so it is only the trader's order if the size
+  // is what they asked for. Anything else rests, rather than filling a ticket of
+  // a size nobody agreed to write.
+  if (bestBidId !== null && bestBid >= limit && bestBidSize === contracts) {
+    return [{ contract: "options", method: "fill_bid", args: { bid_id: bestBidId }, tgas: TGAS }];
   }
-  // Not the vault's: hand it to a bidder instead, at or above the trader's floor.
-  return [
-    {
-      contract: "options",
-      method: "close_ticket",
-      args: {
-        ticket_id: ticket,
-        min_unit_premium: floor > 0 ? toUnits(floor).toString() : null,
-      },
-      tgas: TGAS,
-    },
-  ];
+  return [offer()];
 }
 
 /** Fix the series from the oracle, then claim every ticket on it. Settlement is
@@ -355,6 +382,8 @@ export function describe(calls: Call[], body: ActionBody, context: Context): str
       return `sold ${contracts}x back to the pool`;
     case "close_ticket":
       return `sold ${contracts}x into a resting bid`;
+    case "fill_bid":
+      return `wrote ${contracts}x into a resting bid`;
     case "post_bid":
       return `bid resting at ${Number(body.limit).toFixed(4)}`;
     case "post_offer":

@@ -111,6 +111,32 @@ test("a buy takes the book when a resting offer beats the vault", () => {
   assert.equal(first(calls).args.min_quantity, null);
 });
 
+test("a buy the market has already outpriced is refused before anything is signed", () => {
+  // The limit came from a read one poll old and the venue has moved up. The
+  // contract would call the budget too small; saying what happened, in the
+  // price the trader can act on, is the gateway's job.
+  const side = sideOf({ takeAsk: 0.0612, takeAskFrom: "pool", poolAsk: 0.0612, ask: 0.0612 });
+  assert.throws(
+    () => planAction({ type: "buy", strike: 2_400, quantity: 1, limit: 0.055 }, context({ side })),
+    /the ask moved to 0\.0612 · your limit was 0\.0550/,
+  );
+  // At the new price the same click plans normally.
+  assert.equal(
+    first(planAction({ type: "buy", strike: 2_400, quantity: 1, limit: 0.0612 }, context({ side }))).method,
+    "pool_buy",
+  );
+  // And a cell the vault refuses to write, with no one resting behind it, has no
+  // price to buy at: 0.00 would be a number a click could not fill.
+  assert.throws(
+    () =>
+      planAction(
+        { type: "buy", strike: 2_400, quantity: 1, limit: 0.05 },
+        context({ side: sideOf({ takeAsk: null, takeAskFrom: null, ask: 0, poolAsk: null }) }),
+      ),
+    /nothing is offering/,
+  );
+});
+
 test("the mid comes from the engine or the plan refuses to invent one", () => {
   assert.throws(
     () => planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.052 }, context({ mid: null })),
@@ -176,7 +202,31 @@ test("a sell against the pool closes into the vault; a sell against a person nee
   assert.equal(first(toPerson).args.min_unit_premium, "45000");
   const noFloor = planAction({ type: "close", strike: 2_400, ticket: 1 }, context({ positions: fromBook }));
   assert.equal(first(noFloor).args.min_unit_premium, null);
-  assert.throws(() => planAction({ type: "sell", strike: 2_400 }, context()), /names a ticket/);
+  assert.throws(() => planAction({ type: "sell", strike: 2_400 }, context()), /writing a ticket needs a price/);
+});
+
+test("a sell that names no ticket writes one: into a bid that pays, or resting", () => {
+  // Someone is bidding 0.048 for this cell and the trader asked 0.045: the
+  // contract takes the bid and the writer posts the width.
+  const crossing = planAction(
+    { type: "sell", strike: 2_400, quantity: 2, limit: 0.045 },
+    context({ side: sideOf({ bid: 0.048, bestBidId: 7, bidSize: 2 }) }),
+  );
+  assert.equal(first(crossing).method, "fill_bid");
+  assert.equal(first(crossing).args.bid_id, 7);
+
+  // Asked more than anyone is bidding, so nothing fills and the quote rests.
+  const resting = planAction({ type: "sell", strike: 2_400, quantity: 2, limit: 0.06 }, context());
+  assert.equal(first(resting).method, "post_offer");
+  assert.equal(first(resting).args.premium, "120000");
+
+  // A bid that pays but is a different size also rests: `fill_bid` takes the
+  // whole bid, and a writer must not be handed a ticket they did not size.
+  const wrongSize = planAction(
+    { type: "sell", strike: 2_400, quantity: 2, limit: 0.045 },
+    context({ side: sideOf({ bid: 0.048, bestBidId: 7, bidSize: 5 }) }),
+  );
+  assert.equal(first(wrongSize).method, "post_offer");
 });
 
 test("a sell against the pool still needs a mark to close at", () => {
