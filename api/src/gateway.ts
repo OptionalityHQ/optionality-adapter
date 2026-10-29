@@ -1,0 +1,981 @@
+/**
+ * The gateway's pure half: everything the screen renders, derived from contract
+ * views and engine marks. No I/O and no pricing here on purpose — every number
+ * that decides what a trade *costs* was computed in Rust (`core` in the contract,
+ * `surface` in the engine). This module only converts units, normalises the
+ * contract's uneven JSON, compares quotes and assembles the payload.
+ *
+ * That boundary is the whole reason the parity test suite could be deleted: if
+ * this file ever multiplies a price by a margin, it has become the thing it is
+ * supposed to be reading.
+ */
+
+import type { EngineMarks } from "./gather.ts";
+
+/** The collateral token has six decimals; one contract is one price point. */
+export const SCALE = 1_000_000n;
+
+export type Asset = "ETH" | "BTC";
+export type Kind = "Put" | "Call";
+export type Side = "long" | "short";
+/** The four states a series can be in. `get_positions` spells the last one as a
+ * Rust Debug string, `get_series` as a JSON object; both land here. */
+export type Settlement = "open" | "pending" | "fixed" | "void";
+
+/**
+ * Amounts leave the contract as `U128` wrappers (JSON strings) or as raw `u128`
+ * (JSON numbers) depending on which struct they sit in, and a `number` above
+ * 2^53−1 is silently wrong. Everything crosses into `bigint` at this one seam.
+ */
+export function amount(value: string | number | bigint | null | undefined): bigint {
+  if (value === null || value === undefined) return 0n;
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      throw new RangeError(`amount ${value} is beyond float precision`);
+    }
+    return BigInt(value);
+  }
+  if (!/^\d+$/.test(value)) throw new RangeError(`amount "${value}" is not an integer`);
+  return BigInt(value);
+}
+
+/**
+ * Integer token units from a screen-facing number. Rounded to the nearest atom,
+ * because a price a human typed means the atom it looks like: `0.156` is 156000,
+ * not the 156001 that `Math.ceil(0.156 * 1e6)` returns off a float artifact. The
+ * contract still rounds its own way — collateral up, payout down — in integers.
+ */
+export function toUnits(tokens: number): bigint {
+  const scaled = tokens * Number(SCALE);
+  if (!Number.isFinite(scaled)) throw new RangeError(`tokens ${tokens} is not a price`);
+  return BigInt(Math.round(scaled));
+}
+
+/** Token units to the number the ladder prints. */
+export function fromUnits(units: bigint): number {
+  return Number(units) / Number(SCALE);
+}
+
+export function stepFor(asset: Asset): number {
+  return asset === "BTC" ? 1_000 : 25;
+}
+
+/** A spread is four ladder steps wide, the same shape every maker quotes. */
+export function widthFor(asset: Asset): number {
+  return 4 * stepFor(asset);
+}
+
+/**
+ * Which two strikes a cell on the ladder means. A put is struck *at* the cell
+ * and bought below it; a call is struck at the cell and bought above it.
+ */
+export function legsFor(kind: Kind, strike: number, asset: Asset): { low: number; high: number } {
+  const width = widthFor(asset);
+  return kind === "Put" ? { low: strike - width, high: strike } : { low: strike, high: strike + width };
+}
+
+/** The screen's address for a series; the contract's is `series_id`. */
+export function seriesKey(asset: Asset, expiryIso: string, kind: Kind, strike: number): string {
+  return `${asset}|${expiryIso.slice(0, 10)}|${kind}|${strike}`;
+}
+
+/** Only abbreviate where the thousands digit is not load bearing. ETH strikes
+ * sit 25 apart, so a 1k abbreviation prints 2375/2475 and 2400/2500 as the same
+ * instrument — which is the reason the daemon moved this threshold once already.
+ */
+export function kfmt(value: number): string {
+  return value >= 100_000 ? `${(value / 1_000).toFixed(value % 1_000 === 0 ? 0 : 1)}k` : `${value}`;
+}
+
+/** `ETH C2375/2475`, `BTC C100k/104k` — the label the tape and the ticket show. */
+export function tickerFor(asset: Asset, kind: Kind, low: number, high: number): string {
+  return `${asset} ${kind === "Put" ? "P" : "C"}${kfmt(low)}/${kfmt(high)}`;
+}
+
+export function settlementOf(value: unknown): Settlement {
+  if (typeof value === "string") {
+    if (value.startsWith("Fixed")) return "fixed";
+    if (value === "Void") return "void";
+    if (value === "Pending") return "pending";
+    return "open";
+  }
+  if (value && typeof value === "object" && "Fixed" in value) return "fixed";
+  if (value === "Void") return "void";
+  return "open";
+}
+
+/** The print a series fixed on, in screen units, or null until it has. Read from
+ * the contract's own `{Fixed: {price, …}}`, never recomputed. */
+export function fixedPriceOf(value: unknown): number | null {
+  if (value && typeof value === "object" && "Fixed" in value) {
+    const inner = (value as RawRecord).Fixed as RawRecord | null;
+    return inner && inner.price !== undefined && inner.price !== null ? fromUnits(amount(inner.price)) : null;
+  }
+  if (typeof value === "string" && value.startsWith("Fixed")) {
+    const price = /price:\s*(\d+)/.exec(value)?.[1];
+    return price === undefined ? null : fromUnits(BigInt(price));
+  }
+  return null;
+}
+
+// ---------- contract views ----------
+
+/** One resting offer, as `get_book` returns it. */
+export interface BookLevel {
+  offerId: number;
+  maker: string;
+  quantity: number;
+  unitPremium: number;
+  premium: number;
+  expiresNs: number;
+  taker: string | null;
+}
+
+export interface BidLevel {
+  bidId: number;
+  owner: string;
+  quantity: number;
+  unitPremium: number;
+  premium: number;
+  expiresNs: number;
+}
+
+/** `get_pool_state`, in screen units. `venueLocked` is the margin a void can
+ * still call for, `venue` is the margin the venue may take today. */
+export interface PoolView {
+  equity: number;
+  reserved: number;
+  venueLocked: number;
+  venue: number;
+  consolation: number;
+  shares: number;
+  freeEquity: number;
+  utilisationBps: number;
+  openTickets: number;
+  venueAccount: string;
+  marginBps: number;
+  impactBps: number;
+}
+
+export interface PositionRow {
+  ticketId: number;
+  seriesId: number;
+  side: Side;
+  series: string;
+  asset: Asset;
+  kind: Kind;
+  contracts: number;
+  cost: number;
+  premium: number;
+  maxPayout: number;
+  low: number;
+  high: number;
+  expiryNs: number;
+  settlement: Settlement;
+  fixedPrice: number | null;
+  againstPool: boolean;
+}
+
+export interface SeriesInfo {
+  seriesId: number;
+  asset: Asset;
+  kind: Kind;
+  low: number;
+  high: number;
+  expiryNs: number;
+  settlement: Settlement;
+  /** The print the series fixed on, once it has. */
+  fixedPrice: number | null;
+  minConfidenceBps: number;
+}
+
+interface RawRecord {
+  [key: string]: unknown;
+}
+
+function rows(value: unknown): RawRecord[] {
+  return Array.isArray(value) ? (value as RawRecord[]) : [];
+}
+
+export function normalizeBook(raw: unknown): BookLevel[] {
+  return rows(raw).map((entry) => ({
+    offerId: Number(entry.offer_id),
+    maker: String(entry.maker),
+    quantity: fromUnits(amount(entry.quantity)),
+    unitPremium: fromUnits(amount(entry.unit_premium)),
+    premium: fromUnits(amount(entry.premium)),
+    expiresNs: Number(entry.expires_ns),
+    taker: entry.taker === null || entry.taker === undefined ? null : String(entry.taker),
+  }));
+}
+
+export function normalizeBids(raw: unknown): BidLevel[] {
+  return rows(raw).map((entry) => ({
+    bidId: Number(entry.bid_id),
+    owner: String(entry.owner),
+    quantity: fromUnits(amount(entry.quantity)),
+    unitPremium: fromUnits(amount(entry.unit_premium)),
+    premium: fromUnits(amount(entry.premium)),
+    expiresNs: Number(entry.expires_ns),
+  }));
+}
+
+export function normalizePool(raw: unknown): PoolView {
+  const entry = (raw ?? {}) as RawRecord;
+  return {
+    equity: fromUnits(amount(entry.equity)),
+    reserved: fromUnits(amount(entry.reserved)),
+    venueLocked: fromUnits(amount(entry.venue_locked)),
+    venue: fromUnits(amount(entry.venue)),
+    consolation: fromUnits(amount(entry.consolation)),
+    shares: fromUnits(amount(entry.shares)),
+    freeEquity: fromUnits(amount(entry.free_equity)),
+    utilisationBps: Number(amount(entry.utilisation_bps)),
+    openTickets: Number(entry.open_tickets ?? 0),
+    venueAccount: String(entry.venue_account ?? ""),
+    marginBps: Number(entry.margin_bps ?? 0),
+    impactBps: Number(entry.impact_bps ?? 0),
+  };
+}
+
+export function normalizeSeries(seriesId: number, raw: unknown): SeriesInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const entry = raw as RawRecord;
+  // `Series` stores raw u128 strikes, so these arrive as JSON numbers rather
+  // than the strings the U128-wrapped views use.
+  const low = fromUnits(amount(entry.low_strike));
+  const high = fromUnits(amount(entry.high_strike));
+  return {
+    seriesId,
+    asset: String(entry.underlying) === "BTC" ? "BTC" : "ETH",
+    kind: String(entry.kind) === "Call" ? "Call" : "Put",
+    low,
+    high,
+    expiryNs: Number(entry.expiry_ns),
+    settlement: settlementOf(entry.settlement),
+    fixedPrice: fixedPriceOf(entry.settlement),
+    minConfidenceBps: Number(entry.min_confidence_bps ?? 0),
+  };
+}
+
+export function normalizePositions(raw: unknown, vaultAccount: string): PositionRow[] {
+  return rows(raw)
+    .filter((entry) => entry.side === "long" || entry.side === "short")
+    .map((entry) => {
+      const low = fromUnits(amount(entry.low_strike));
+      const high = fromUnits(amount(entry.high_strike));
+      const asset = String(entry.underlying) === "BTC" ? "BTC" : "ETH";
+      const kind = String(entry.kind) === "Call" ? "Call" : "Put";
+      return {
+        ticketId: Number(entry.ticket_id),
+        seriesId: Number(entry.series_id),
+        side: entry.side as Side,
+        series: tickerFor(asset, kind, low, high),
+        asset,
+        kind,
+        contracts: fromUnits(amount(entry.quantity)),
+        cost: fromUnits(amount(entry.cost)),
+        premium: fromUnits(amount(entry.premium)),
+        maxPayout: fromUnits(amount(entry.collateral)),
+        low,
+        high,
+        expiryNs: Number(entry.expiry_ns),
+        settlement: settlementOf(entry.settlement),
+        fixedPrice: entry.fixed_price === null ? null : fromUnits(amount(entry.fixed_price)),
+        // The contract itself is the maker of a vault ticket; no account can be
+        // its own predecessor, so this identity cannot be forged by a user.
+        againstPool: String(entry.maker ?? "") === vaultAccount,
+      };
+    });
+}
+
+// ---------- the ladder ----------
+
+/**
+ * What the engine says a series is worth. `poolAsk` and `poolBid` are the vault's
+ * loaded and haircut quotes — the engine derives them from the on-chain margin,
+ * because deriving them here would put pricing in TypeScript.
+ */
+export interface MarkSide {
+  mark: number;
+  bid: number;
+  ask: number;
+  markIv: number | null;
+  bidIv: number | null;
+  askIv: number | null;
+  delta: number;
+  gamma: number;
+  vega: number;
+  theta: number;
+  poolAsk: number | null;
+  poolBid: number | null;
+  /** The two legs, so the payoff diagram never has to invent a width. */
+  low: number;
+  high: number;
+}
+
+export interface LadderSide {
+  mark: number;
+  bid: number;
+  ask: number;
+  bidIv: number | null;
+  askIv: number | null;
+  markIv: number | null;
+  delta: number;
+  /** Straight from the engine's model — the screen shows them, so they travel
+   * with the quote rather than being re-derived in the browser. */
+  gamma: number;
+  vega: number;
+  theta: number;
+  bidSize: number;
+  askSize: number;
+  bidCount: number;
+  askCount: number;
+  bestBidId: number | null;
+  bestOfferId: number | null;
+  poolAsk: number | null;
+  poolBid: number | null;
+  /** The ask a taker would actually pay, and who would take it: the book if it
+   * beats the vault, the vault otherwise. A comparison, not a calculation. */
+  takeAsk: number | null;
+  takeAskFrom: "book" | "pool" | null;
+  seriesId: number | null;
+  settlement: Settlement;
+  low: number;
+  high: number;
+}
+
+export interface LadderRow {
+  strike: number;
+  put: LadderSide | null;
+  call: LadderSide | null;
+}
+
+/** One cell: the engine's marks with the chain's resting liquidity overlaid. */
+export function mergeSide(
+  mark: MarkSide | null,
+  book: BookLevel[],
+  bids: BidLevel[],
+  seriesId: number | null,
+  settlement: Settlement,
+): LadderSide | null {
+  if (!mark && book.length === 0 && bids.length === 0) return null;
+  const bestOffer = book[0] ?? null;
+  const bestBid = bids[0] ?? null;
+  const base = mark ?? {
+    // With no model there is nothing but what people committed: the resting
+    // quotes are the mark, and the side nobody is quoting is simply absent.
+    mark: bestOffer?.unitPremium ?? bestBid?.unitPremium ?? 0,
+    bid: bestBid?.unitPremium ?? 0,
+    ask: bestOffer?.unitPremium ?? 0,
+    markIv: null,
+    bidIv: null,
+    askIv: null,
+    delta: 0,
+    gamma: 0,
+    vega: 0,
+    theta: 0,
+    poolAsk: null,
+    poolBid: null,
+    low: 0,
+    high: 0,
+  };
+  // A resting quote on-chain beats the model's spread: it is a price someone
+  // actually committed collateral to.
+  const ask = bestOffer ? bestOffer.unitPremium : base.ask;
+  const bid = bestBid ? bestBid.unitPremium : base.bid;
+  const candidates: Array<{ price: number; from: "book" | "pool" }> = [];
+  if (bestOffer) candidates.push({ price: bestOffer.unitPremium, from: "book" });
+  if (base.poolAsk !== null && base.poolAsk !== undefined) {
+    candidates.push({ price: base.poolAsk, from: "pool" });
+  }
+  const takeAsk = candidates.length
+    ? candidates.reduce((cheapest, next) => (next.price < cheapest.price ? next : cheapest))
+    : null;
+  return {
+    mark: base.mark,
+    bid,
+    ask,
+    bidIv: base.bidIv,
+    askIv: base.askIv,
+    markIv: base.markIv,
+    delta: base.delta,
+    gamma: base.gamma,
+    vega: base.vega,
+    theta: base.theta,
+    bidSize: bestBid ? bestBid.quantity : 0,
+    askSize: bestOffer ? bestOffer.quantity : 0,
+    bidCount: bids.length,
+    askCount: book.length,
+    bestBidId: bestBid ? bestBid.bidId : null,
+    bestOfferId: bestOffer ? bestOffer.offerId : null,
+    poolAsk: base.poolAsk ?? null,
+    poolBid: base.poolBid ?? null,
+    takeAsk: takeAsk ? takeAsk.price : null,
+    takeAskFrom: takeAsk ? takeAsk.from : null,
+    seriesId,
+    settlement,
+    low: base.low,
+    high: base.high,
+  };
+}
+
+/** The screen's `state.chain`: one row per strike, both sides. */
+export function buildLadder(input: {
+  strikes: number[];
+  marks: Partial<Record<string, MarkSide>>;
+  books: Partial<Record<number, BookLevel[]>>;
+  bids: Partial<Record<number, BidLevel[]>>;
+  series: Partial<Record<number, SeriesInfo | null>>;
+  idFor: (kind: Kind, strike: number) => number | null;
+}): LadderRow[] {
+  const sideOf = (kind: Kind, strike: number): LadderSide | null => {
+    const seriesId = input.idFor(kind, strike);
+    const info = seriesId === null ? undefined : input.series[seriesId];
+    return mergeSide(
+      input.marks[`${kind}|${strike}`] ?? null,
+      seriesId === null ? [] : (input.books[seriesId] ?? []),
+      seriesId === null ? [] : (input.bids[seriesId] ?? []),
+      seriesId,
+      info?.settlement ?? "open",
+    );
+  };
+  return input.strikes.map((strike) => ({
+    strike,
+    put: sideOf("Put", strike),
+    call: sideOf("Call", strike),
+  }));
+}
+
+// ---------- the rest of the payload ----------
+
+export interface OrderRow {
+  series: string;
+  seriesId: number;
+  side: "buy" | "sell";
+  who: string;
+  size: number;
+  price: number;
+  expiresNs: number;
+  againstPool: boolean;
+}
+
+/** Everything resting on-chain, newest series first within each price level. */
+export function buildOrders(
+  books: Array<{ seriesId: number; ticker: string; levels: BookLevel[] }>,
+  bids: Array<{ seriesId: number; ticker: string; levels: BidLevel[] }>,
+  vaultAccount: string,
+): OrderRow[] {
+  const rows: OrderRow[] = [];
+  for (const entry of books) {
+    for (const level of entry.levels) {
+      rows.push({
+        series: entry.ticker,
+        seriesId: entry.seriesId,
+        side: "sell",
+        who: level.maker === vaultAccount ? "the pool" : level.maker,
+        size: level.quantity,
+        price: level.unitPremium,
+        expiresNs: level.expiresNs,
+        againstPool: level.maker === vaultAccount,
+      });
+    }
+  }
+  for (const entry of bids) {
+    for (const level of entry.levels) {
+      rows.push({
+        series: entry.ticker,
+        seriesId: entry.seriesId,
+        side: "buy",
+        who: level.owner === vaultAccount ? "the pool" : level.owner,
+        size: level.quantity,
+        price: level.unitPremium,
+        expiresNs: level.expiresNs,
+        againstPool: level.owner === vaultAccount,
+      });
+    }
+  }
+  return rows.sort((a, b) => b.price - a.price);
+}
+
+export interface PortfolioRow {
+  ticketId: number;
+  series: string;
+  side: Side;
+  contracts: number;
+  cost: number;
+  mark: number | null;
+  /** What closing one contract pays today, after the vault's exit haircut. */
+  exitUnit: number | null;
+  /** Mark minus cost, over the whole position. Null when nothing marks it. */
+  open: number | null;
+  expiry: string;
+  /** `asset|expiry|kind|strike`, the address the close button posts back. */
+  seriesKey: string;
+  maxPayout: number;
+  againstPool: boolean;
+  settlement: Settlement;
+  closable: boolean;
+  closeBlock: string | null;
+}
+
+export interface PortfolioTotals {
+  open: number;
+  atRisk: number;
+  positions: number;
+  closable: number;
+}
+
+export interface PortfolioView {
+  rows: PortfolioRow[];
+  totals: PortfolioTotals;
+}
+
+/**
+ * The position table. A mark is required to show a PnL at all: without one the
+ * row states the facts (cost, worst case) and leaves the number blank rather
+ * than inventing a zero the trader would read as a flat position.
+ */
+export function buildPortfolio(
+  positions: PositionRow[],
+  marks: Partial<Record<number, { mark: number; exitValue: number | null }>>,
+  nowMs = Date.now(),
+): PortfolioView {
+  const rows = positions.map((position) => {
+    const quote = marks[position.seriesId];
+    const live = position.side === "long" && position.settlement === "open";
+    const mark = live && quote ? quote.mark : null;
+    const expiry = expiryLabel(position.expiryNs, nowMs);
+    const closeBlock =
+      position.side !== "long"
+        ? "a short waits for the print"
+        : position.settlement !== "open"
+          ? `series ${position.settlement}`
+          : mark === null
+            ? "no mark yet"
+            : null;
+    return {
+      ticketId: position.ticketId,
+      series: position.series,
+      side: position.side,
+      contracts: position.contracts,
+      cost: position.cost,
+      mark,
+      exitUnit: live && quote ? quote.exitValue : null,
+      // The mark is one contract's price and the cost is the whole ticket's, so
+      // the subtraction has to be made at the ticket's size. Mixing them was a
+      // −$90 "open" on a −$5 position.
+      open: mark === null ? null : mark * position.contracts - position.cost,
+      expiry,
+      seriesKey: `${position.asset}|${expiry}|${position.kind}|${seriesStrike(position)}`,
+      maxPayout: position.maxPayout,
+      againstPool: position.againstPool,
+      settlement: position.settlement,
+      closable: closeBlock === null,
+      closeBlock,
+    };
+  });
+  return {
+    rows,
+    totals: {
+      open: rows.reduce((sum, row) => sum + (row.open ?? 0), 0),
+      // A long spread cannot lose more than it cost: the ticket is bounded by
+      // its own width and the vault stands behind the rest.
+      atRisk: rows.reduce((sum, row) => sum + row.cost, 0),
+      positions: rows.length,
+      closable: rows.filter((row) => row.closable).length,
+    },
+  };
+}
+
+/** The expiry the way a chip shows it: a clock within a day, a date beyond it. */
+export function expiryLabel(expiryNs: number, nowMs: number): string {
+  const date = new Date(Math.round(expiryNs / 1e6));
+  const clock = `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
+  const hours = expiryNs / 1e9 / 3600 - nowMs / 3_600_000;
+  return hours <= 24 ? `${clock} UTC` : `${date.toISOString().slice(8, 10)} ${MONTHS[date.getUTCMonth()]} ${clock}`;
+}
+
+export interface Custody {
+  expected: number;
+  held: number;
+  conserved: boolean;
+  buckets: { name: string; tokens: number }[];
+}
+
+/**
+ * The reconciliation the whole design rests on: what the contract says it holds
+ * against what the token says it holds. `conserved` is the only claim this file
+ * makes about money, and it is a comparison of two numbers the chain produced.
+ */
+export function buildCustody(
+  expected: string | number | bigint,
+  held: string | number | bigint,
+  stats: RawRecord,
+  pool: PoolView,
+): Custody {
+  const expectedUnits = amount(expected);
+  const heldUnits = amount(held);
+  return {
+    expected: fromUnits(expectedUnits),
+    held: fromUnits(heldUnits),
+    conserved: expectedUnits === heldUnits,
+    buckets: [
+      { name: "available", tokens: fromUnits(amount(stats.total_available)) },
+      { name: "offer collateral", tokens: fromUnits(amount(stats.total_offer_collateral)) },
+      { name: "bid escrow", tokens: fromUnits(amount(stats.total_bid_escrow)) },
+      { name: "ticket collateral", tokens: fromUnits(amount(stats.total_ticket_collateral)) },
+      { name: "ticket premium", tokens: fromUnits(amount(stats.total_ticket_premium)) },
+      { name: "pending withdrawals", tokens: fromUnits(amount(stats.total_pending_withdrawals)) },
+      { name: "pool equity", tokens: pool.equity },
+      { name: "margin locked", tokens: pool.venueLocked },
+      { name: "margin earned", tokens: pool.venue },
+      { name: "consolation", tokens: pool.consolation },
+    ],
+  };
+}
+
+// ---------- the strip, the detail, the tape ----------
+
+export interface ExpiryChip {
+  /** The exact nanosecond the chain stored, as text so a round trip through the
+   * page cannot lose the last digits a float would drop. */
+  ns: string;
+  iso: string;
+  label: string;
+  dte: number;
+}
+
+/**
+ * The expiry strip, derived from the series the chain has rather than from a
+ * calendar kept beside it. Two batches on the same UTC day are two chips: the
+ * engine lists a new one every hour, and a day-wide key would silently merge
+ * their grids into one registry.
+ */
+export function expiryChips(infos: SeriesInfo[], nowMs: number): ExpiryChip[] {
+  const stamps: number[] = [];
+  for (const info of infos) if (!stamps.includes(info.expiryNs)) stamps.push(info.expiryNs);
+  return stamps
+    .sort((a, b) => a - b)
+    .map((expiryNs) => {
+      const date = new Date(Math.round(expiryNs / 1e6));
+      return {
+        ns: String(BigInt(expiryNs)),
+        iso: date.toISOString(),
+        label: expiryLabel(expiryNs, nowMs),
+        dte: Math.max(0, Math.ceil((date.getTime() - nowMs) / 86_400_000)),
+      };
+    });
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+export interface QuoteRow {
+  who: string;
+  quantity: number;
+  premium: number;
+  price: number;
+}
+
+const quoteRows = (levels: Array<{ maker?: string; owner?: string; quantity: number; premium: number; unitPremium: number }>): QuoteRow[] =>
+  levels.map((level) => ({
+    who: String(level.maker ?? level.owner ?? ""),
+    quantity: level.quantity,
+    premium: level.premium,
+    price: level.unitPremium,
+  }));
+
+export interface SeriesDetail {
+  seriesId: number;
+  asset: Asset;
+  kind: Kind;
+  strike: number;
+  low: number;
+  high: number;
+  expiry: string | null;
+  expiryIso: string | null;
+  settlement: Settlement;
+  settledPrice: number | null;
+  minConfidenceBps: number;
+  offers: QuoteRow[];
+  bids: QuoteRow[];
+}
+
+/** The right-hand panel's series card: what the chain says this cell is. */
+export function seriesDetail(
+  info: SeriesInfo | null,
+  offers: BookLevel[],
+  bids: BidLevel[],
+  expiry: ExpiryChip | null,
+): SeriesDetail | null {
+  if (!info) return null;
+  return {
+    seriesId: info.seriesId,
+    asset: info.asset,
+    kind: info.kind,
+    strike: seriesStrike(info),
+    low: info.low,
+    high: info.high,
+    expiry: expiry?.label ?? null,
+    expiryIso: expiry?.iso ?? null,
+    settlement: info.settlement,
+    settledPrice: info.fixedPrice,
+    minConfidenceBps: info.minConfidenceBps,
+    offers: quoteRows(offers),
+    bids: quoteRows(bids),
+  };
+}
+
+/** A put is struck at its high leg, a call at its low one. */
+export function seriesStrike(info: Pick<SeriesInfo, "kind" | "low" | "high">): number {
+  return info.kind === "Put" ? info.high : info.low;
+}
+
+export interface PrintRow {
+  /** "HH:MM:SS.mmm", the tape's own clock. */
+  at: string;
+  text: string;
+  series: string;
+  side: "buy" | "close";
+  who: string;
+  /** Contracts for an entry; 0 for a run-off, which has no size to show. */
+  size: number;
+  price: number | null;
+  premium: number;
+}
+
+export interface Bucket {
+  t: number;
+  notional: number;
+  premium: number;
+  trades: number;
+  contracts: number;
+}
+
+export interface ClosedRow {
+  /** When the gateway watched it leave the chain, `HH:MM:SS`. */
+  at: string;
+  series: string;
+  side: Side;
+  contracts: number;
+  cost: number;
+  proceeds: number;
+  pnl: number;
+  via: string;
+}
+
+/**
+ * The venue tape, from what the chain did. It holds no book and prices nothing:
+ * an entry is a ticket the contract wrote at the premium the contract escrowed,
+ * and a ticket that has gone is recorded with the payout the transaction
+ * reported. `realised` is the one subtraction here, and both of its operands
+ * came off the chain.
+ */
+export class Tape {
+  rows: PrintRow[] = [];
+  buckets: Bucket[] = [];
+  closed: ClosedRow[] = [];
+  realised = 0;
+  prints = 0;
+  /** The account the screen is signed in as: its rows say `you`, not a 40-character
+   * sandbox name. Keys stay the real account, so a receipt still finds its ticket. */
+  self: string | null = null;
+  /** A run-off has no size to show, so the last hour of history is enough. */
+  private readonly closedLimit = 60;
+  private held = new Map<string, { position: PositionRow; who: string }>();
+
+  /** Diff the chain's open tickets against the last pass. */
+  observe(entries: Array<{ who: string; position: PositionRow }>, spot: number | null, nowMs = Date.now()): PrintRow[] {
+    const fresh = new Map<string, { who: string; position: PositionRow }>();
+    for (const entry of entries) fresh.set(`${entry.who}|${entry.position.ticketId}`, entry);
+    const added: PrintRow[] = [];
+    for (const [key, entry] of fresh) {
+      if (this.held.has(key)) continue;
+      const unit = entry.position.premium / Math.max(entry.position.contracts, 1);
+      const row = this.entry(entry.who, entry.position, spot, nowMs, "buy", `${this.nameOf(entry.who)} bought ${entry.position.contracts} ${entry.position.series} @ ${unit.toFixed(4)}`);
+      added.push(row);
+    }
+    for (const [key, entry] of this.held) {
+      if (fresh.has(key)) continue;
+      added.push(
+        this.entry(entry.who, entry.position, spot, nowMs, "close", `${this.nameOf(entry.who)} · ${entry.position.series} ran off`),
+      );
+    }
+    this.held = fresh;
+    return added;
+  }
+
+  private nameOf(account: string): string {
+    return this.self !== null && account === this.self ? "you" : account;
+  }
+
+  /** What a settlement or an early close actually paid, from its receipt. */
+  paid(who: string, ticketId: number, paidTokens: number): void {
+    const key = `${who}|${ticketId}`;
+    const held = this.held.get(key);
+    const contracts = held?.position.contracts ?? 0;
+    const cost = held?.position.cost ?? 0;
+    const series = held?.position.series ?? `ticket ${ticketId}`;
+    this.closed.unshift({
+      at: new Date().toISOString().slice(11, 19),
+      series,
+      side: held?.position.side ?? "long",
+      contracts,
+      cost,
+      proceeds: paidTokens,
+      pnl: paidTokens - cost,
+      via: held?.position.againstPool ? "the pool" : "the book",
+    });
+    this.closed = this.closed.slice(0, this.closedLimit);
+    this.realised += paidTokens - cost;
+  }
+
+  private entry(
+    who: string,
+    position: PositionRow,
+    spot: number | null,
+    nowMs: number,
+    side: "buy" | "close",
+    text: string,
+  ): PrintRow {
+    const at = new Date(nowMs).toISOString().slice(11, 23);
+    const premium = side === "buy" ? position.premium : 0;
+    const contracts = side === "buy" ? position.contracts : 0;
+    const row: PrintRow = {
+      at,
+      text: `${at.slice(0, 8)} ${text}`,
+      series: position.series,
+      side,
+      who,
+      size: contracts,
+      price: contracts > 0 ? premium / contracts : null,
+      premium,
+    };
+    this.rows.unshift(row);
+    this.rows = this.rows.slice(0, 240);
+    this.prints += 1;
+    if (contracts > 0) {
+      const second = Math.floor(nowMs / 1000);
+      let bucket = this.buckets[this.buckets.length - 1];
+      if (!bucket || bucket.t !== second) {
+        bucket = { t: second, notional: 0, premium: 0, trades: 0, contracts: 0 };
+        this.buckets.push(bucket);
+        this.buckets = this.buckets.slice(-60);
+      }
+      bucket.premium += premium;
+      bucket.contracts += contracts;
+      bucket.trades += 1;
+      bucket.notional += contracts * (spot ?? 0);
+    }
+    return row;
+  }
+}
+
+/**
+ * An LP's own position in the vault. `value` is `get_lp_value`, which is
+ * `pool_withdraw`'s arithmetic read-only, and `exitable` compares it with the
+ * free equity — the rule the contract applies when somebody actually leaves.
+ */
+export interface LpPosition {
+  account: string;
+  shares: number;
+  value: number;
+  exitable: boolean;
+}
+
+export interface StatePayload {
+  now: number;
+  spot: number | null;
+  chain: LadderRow[];
+  positions: PortfolioView;
+  orders: OrderRow[];
+  custody: Custody;
+  pool: PoolView;
+  seriesCount: number;
+  openTickets: number;
+  /** The expiry strip, read off the chain's own series. */
+  expiries: ExpiryChip[];
+  /** The cell the page asked about, or null when no strike is selected. */
+  series: SeriesDetail | null;
+  /** The engine's `/feed` body: index, venues behind it, socket counters. */
+  feed: RawRecord | null;
+  trades: string[];
+  volumeBuckets: Bucket[];
+  tape: { prints: number; realised: number; closed: ClosedRow[] };
+  you: { account: string; available: number; wallet: number } | null;
+  /** The signed-in account's seat in the vault, priced by the contract itself. */
+  lp: LpPosition;
+  /** The contract every figure on this payload was read from. */
+  contract: string;
+  source: "contract";
+}
+
+/** The `/state` body, in the key order a reader of the screen expects. */
+export function buildState(input: {
+  now: number;
+  spot: number | null;
+  chain: LadderRow[];
+  positions: PortfolioView;
+  orders: OrderRow[];
+  custody: Custody;
+  pool: PoolView;
+  seriesCount: number;
+  openTickets: number;
+  expiries: ExpiryChip[];
+  series: SeriesDetail | null;
+  feed: RawRecord | null;
+  tape: Tape;
+  you: { account: string; available: number; wallet: number } | null;
+  lp: LpPosition;
+  contract: string;
+}): StatePayload {
+  return {
+    now: input.now,
+    spot: input.spot,
+    chain: input.chain,
+    positions: input.positions,
+    orders: input.orders,
+    custody: input.custody,
+    pool: input.pool,
+    seriesCount: input.seriesCount,
+    openTickets: input.openTickets,
+    expiries: input.expiries,
+    series: input.series,
+    feed: input.feed,
+    trades: input.tape.rows.map((row) => row.text),
+    volumeBuckets: input.tape.buckets.slice(-60),
+    tape: { prints: input.tape.prints, realised: input.tape.realised, closed: input.tape.closed },
+    you: input.you,
+    lp: input.lp,
+    contract: input.contract,
+    source: "contract",
+  };
+}
+
+export function marksFromEngine(rows: Array<{ strike: number; put: LadderSide | null; call: LadderSide | null }>): EngineMarks {
+  const cell = (kind: Kind, strike: number): MarkSide | null => {
+    const row = rows.find((entry) => entry.strike === strike);
+    const side = kind === "Put" ? row?.put : row?.call;
+    if (!side) return null;
+    return {
+      mark: side.mark,
+      bid: side.bid,
+      ask: side.ask,
+      markIv: side.markIv,
+      bidIv: side.bidIv,
+      askIv: side.askIv,
+      delta: side.delta,
+      gamma: side.gamma,
+      vega: side.vega,
+      theta: side.theta,
+      poolAsk: side.ask,
+      poolBid: side.bid,
+      low: side.low,
+      high: side.high,
+    };
+  };
+  // Keyed by cell, never by series id: the engine's ladder knows strikes, the
+  // chain's registry knows ids, and the two are only joined in `contextFor`.
+  return { side: (_asset, kind, strike) => cell(kind, strike) };
+}
