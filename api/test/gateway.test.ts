@@ -559,6 +559,12 @@ test("the tape records what the chain wrote and what it paid", () => {
   assert.equal(tape.closed[0].proceeds, 15.5);
   assert.equal(tape.closed[0].pnl, 15.5 - 12.4);
   assert.equal(tape.closed[0].via, "the pool");
+  // A ticket that ran to expiry was not sold to anyone: the row says which route
+  // paid, so the history does not claim a trade that never happened.
+  tape.paid("you.test", 0, 16.0, "settle_ticket");
+  assert.equal(tape.closed[0].via, "the print");
+  tape.paid("you.test", 0, 16.5, "close_ticket");
+  assert.equal(tape.closed[0].via, "the book");
 
   const gone = tape.observe([], 2_360, at + 200);
   assert.equal(gone[0].side, "close");

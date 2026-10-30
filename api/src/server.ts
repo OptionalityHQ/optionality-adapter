@@ -408,7 +408,7 @@ async function main(): Promise<void> {
           };
           calls.forEach((call, index) => {
             if (!["pool_close", "close_ticket", "settle_ticket"].includes(call.method)) return;
-            tape.paid(you, Number(call.args.ticket_id), paidOf(results[index]?.value));
+            tape.paid(you, Number(call.args.ticket_id), paidOf(results[index]?.value), call.method);
           });
           json(200, {
             ok: true,

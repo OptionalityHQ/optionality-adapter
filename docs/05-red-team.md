@@ -1,6 +1,6 @@
 # Red-team pass: what attacked the vault, and what closed it
 
-Six failures were found against the running local venue — the contract directly with a
+Seven failures were found against the running local venue — the contract directly with a
 role key the gateway never uses, the gateway's HTTP surface, and the page in a real
 browser. Each was reproduced before it was fixed. Evidence:
 [`evidence/security/probes-2026-10-30.txt`](../near-mvp/evidence/security/probes-2026-10-30.txt),
@@ -143,7 +143,33 @@ Verified on a three-minute tenor (`EXPIRY_HOURS=0.05 scripts/venue.sh`): five ro
 six minutes, each one listed and re-quoted within an operator pass, the vault-priced
 cell count returning to nine every time.
 
-## 7. Not exploited, and why
+## 7. A held ticket could never be paid — fixed
+
+Holding a spread to expiry was the one lifecycle step the browser had never taken. It
+took three found bugs to make it work, and each was invisible from the page:
+
+- `request_settlement` chains an oracle query and a callback, so it needs the gas for
+  both. The operator sent a flat 30 Tgas and every call reverted with *Exceeded the
+  prepaid gas* — while `into_result()` still reported success, so the log said
+  `fixed 74 series` on chain state where nothing had moved.
+- The engine emitted a print only from a `live` index, and `live` needs the venues inside
+  20 bps of each other. On a 25 bps minute there was no print at all, so no series inside
+  its window could be fixed — even though the chain's own floor (30% confidence) would
+  have accepted the 95%-confidence number. Quotability is the venue's appetite for making
+  markets; settleability is the chain's rule about the print, and they are now separate:
+  one source or a stale one still produces nothing, two disagreeing venues produce a print
+  whose confidence carries the disagreement.
+- A series whose window closed unfixed had no exit. It cannot be fixed afterwards and
+  `settle_ticket` refuses it, so every ticket in it stayed open for the life of the
+  contract. The operator now voids it at the deadline (permissionless, on chain), and the
+  screen's Settle button pays either route — the print for a fixed series, the refund for
+  a void.
+
+Verified in the browser on a three-minute tenor: buy → hold to expiry → the row swaps
+Close for **Settle · up to $100.00** → `settled 1 ticket(s)` → realised −$1.79 → +$0.391,
+cash +$11.29, and the history row reads `the print`, not a pool sale that never happened.
+
+## 8. Not exploited, and why
 
 | surface | status |
 | --- | --- |

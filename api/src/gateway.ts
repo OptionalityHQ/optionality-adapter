@@ -576,6 +576,8 @@ export interface PortfolioRow {
   /** What a close pays now, minus cost, over the whole position. Null when nothing prices it. */
   open: number | null;
   expiry: string;
+  /** The same instant in nanoseconds, so a caller can wait it out or sort by it. */
+  expiryNs: number;
   /** `asset|expiry|kind|strike`, the address the close button posts back. */
   seriesKey: string;
   maxPayout: number;
@@ -653,6 +655,7 @@ export function buildPortfolio(
       // −$90 "open" on a −$5 position.
       open: exitUnit === null ? null : exitUnit * position.contracts - position.cost,
       expiry,
+      expiryNs: position.expiryNs,
       seriesKey: `${position.asset}|${expiry}|${position.kind}|${seriesStrike(position)}`,
       maxPayout: position.maxPayout,
       againstPool: position.againstPool,
@@ -896,7 +899,7 @@ export class Tape {
   }
 
   /** What a settlement or an early close actually paid, from its receipt. */
-  paid(who: string, ticketId: number, paidTokens: number): void {
+  paid(who: string, ticketId: number, paidTokens: number, method = "pool_close"): void {
     const key = `${who}|${ticketId}`;
     const held = this.held.get(key);
     const contracts = held?.position.contracts ?? 0;
@@ -910,7 +913,10 @@ export class Tape {
       cost,
       proceeds: paidTokens,
       pnl: paidTokens - cost,
-      via: held?.position.againstPool ? "the pool" : "the book",
+      // The route that paid, not the ticket's maker: a settled ticket was not
+      // sold to anyone, and calling that a pool sale is a trade that never
+      // happened. "the print" is the oracle price the series fixed on.
+      via: method === "settle_ticket" ? "the print" : method === "close_ticket" ? "the book" : "the pool",
     });
     this.closed = this.closed.slice(0, this.closedLimit);
     this.realised += paidTokens - cost;
