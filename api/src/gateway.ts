@@ -174,6 +174,8 @@ export interface PositionRow {
   expiryNs: number;
   settlement: Settlement;
   fixedPrice: number | null;
+  /** Which seats signed the price a finished ticket paid out on. */
+  settleSources: string[];
   againstPool: boolean;
 }
 
@@ -188,6 +190,97 @@ export interface SeriesInfo {
   /** The print the series fixed on, once it has. */
   fixedPrice: number | null;
   minConfidenceBps: number;
+}
+
+// ---------- the settlement committee ----------
+
+/** One seat's last answer, as the oracle holds it. */
+export interface OracleSeat {
+  source: string;
+  /** Dollars. Null when this seat has never spoken about the feed. */
+  price: number | null;
+  /** Seconds since the oracle last accepted a price from this seat, measured on
+   * the chain's own clock rather than the reader's. */
+  ageS: number;
+  fresh: boolean;
+  confidenceBps: number;
+}
+
+export interface OracleFix {
+  price: number;
+  timeNs: number;
+  dispersionBps: number;
+  confidenceBps: number;
+  sources: string[];
+}
+
+/**
+ * Who is allowed to settle a ticket, and what they said.
+ *
+ * The screen shows this because the claim is a public one: a settlement needs a
+ * quorum of independently signed prices, and the venue's own index is one seat at
+ * that table rather than the referee. `disagreementBps` is the honest version of
+ * "how far was our number from the one that paid out".
+ */
+export interface OracleView {
+  feed: string;
+  quorum: number;
+  toleranceBps: number;
+  seats: OracleSeat[];
+  freshSeats: number;
+  agreeingSeats: number;
+  canFix: boolean;
+  lastFix: OracleFix | null;
+  disagreementBps: number | null;
+}
+
+export function normalizeCommittee(raw: unknown): OracleView | null {
+  const committee = raw as RawRecord | null;
+  if (!committee || typeof committee !== "object") return null;
+  const seats = rows(committee.seats).map((seat) => ({
+    source: String(seat.source),
+    price: seat.price === null || seat.price === undefined ? null : fromUnits(amount(seat.price)),
+    // Nanoseconds do not fit a float and are not meant to: `amount` refuses them,
+    // so the stamps come over as numbers and keep the same ~256 ns of slack the
+    // series' own `expiryNs` already has.
+    ageS: Number(seat.age_ns) / 1e9,
+    fresh: seat.fresh === true,
+    confidenceBps: Number(amount(seat.confidence_bps)),
+  }));
+  const fix = committee.last_fix as RawRecord | null | undefined;
+  const lastFix: OracleFix | null =
+    fix === null || fix === undefined
+      ? null
+      : {
+          price: fromUnits(amount(fix.price)),
+          timeNs: Number(fix.publish_time_ns),
+          dispersionBps: Number(amount(fix.dispersion_bps)),
+          confidenceBps: Number(amount(fix.confidence_bps)),
+          sources: Array.isArray(fix.sources) ? fix.sources.map(String) : [],
+        };
+  const ours = seats.find((seat) => seat.source === "venue-index");
+  return {
+    feed: String(committee.feed_id ?? ""),
+    quorum: Number(amount(committee.quorum)),
+    toleranceBps: Number(amount(committee.tolerance_bps)),
+    seats,
+    freshSeats: Number(amount(committee.fresh_sources)),
+    agreeingSeats: Number(amount(committee.agreeing_sources)),
+    canFix: committee.can_fix === true,
+    lastFix,
+    // Only when both exist. The venue's index and the committee's fix are two
+    // different numbers, and a screen that quietly substituted one for the other
+    // is how a trader stops believing either.
+    disagreementBps:
+      ours?.price === null || ours?.price === undefined || !lastFix || lastFix.price <= 0
+        ? null
+        : Math.round((Math.abs(ours.price - lastFix.price) / lastFix.price) * 10_000),
+  };
+}
+
+/** The feed a settlement price is read from for an asset. */
+export function feedFor(asset: Asset): string {
+  return `${asset}-USD`;
 }
 
 interface RawRecord {
@@ -320,6 +413,7 @@ export function normalizePositions(raw: unknown, vaultAccount: string): Position
         expiryNs: Number(entry.expiry_ns),
         settlement: settlementOf(entry.settlement),
         fixedPrice: entry.fixed_price === null ? null : fromUnits(amount(entry.fixed_price)),
+        settleSources: Array.isArray(entry.settle_sources) ? entry.settle_sources.map(String) : [],
         // The contract itself is the maker of a vault ticket; no account can be
         // its own predecessor, so this identity cannot be forged by a user.
         againstPool: String(entry.maker ?? "") === vaultAccount,
@@ -583,6 +677,9 @@ export interface PortfolioRow {
   maxPayout: number;
   againstPool: boolean;
   settlement: Settlement;
+  /** The print the series settled at, and the seats behind it. */
+  fixedPrice: number | null;
+  settleSources: string[];
   closable: boolean;
   closeBlock: string | null;
 }
@@ -660,6 +757,8 @@ export function buildPortfolio(
       maxPayout: position.maxPayout,
       againstPool: position.againstPool,
       settlement: position.settlement,
+      fixedPrice: position.fixedPrice,
+      settleSources: position.settleSources,
       closable: closeBlock === null,
       closeBlock,
     };
@@ -1001,6 +1100,8 @@ export interface StatePayload {
   series: SeriesDetail | null;
   /** The engine's `/feed` body: index, venues behind it, socket counters. */
   feed: RawRecord | null;
+  /** The oracle's committee for this asset's feed: who may settle, and what they said. */
+  oracle: OracleView | null;
   trades: string[];
   volumeBuckets: Bucket[];
   tape: { prints: number; realised: number; closed: ClosedRow[] };
@@ -1026,6 +1127,7 @@ export function buildState(input: {
   expiries: ExpiryChip[];
   series: SeriesDetail | null;
   feed: RawRecord | null;
+  oracle: OracleView | null;
   tape: Tape;
   you: { account: string; available: number; wallet: number } | null;
   lp: LpPosition;
@@ -1044,6 +1146,7 @@ export function buildState(input: {
     expiries: input.expiries,
     series: input.series,
     feed: input.feed,
+    oracle: input.oracle,
     trades: input.tape.rows.map((row) => row.text),
     volumeBuckets: input.tape.buckets.slice(-60),
     tape: { prints: input.tape.prints, realised: input.tape.realised, closed: input.tape.closed },

@@ -10,12 +10,14 @@ import {
   buildPortfolio,
   buildState,
   expiryChips,
+  feedFor,
   fromUnits,
   kfmt,
   legsFor,
   mergeSide,
   normalizeBids,
   normalizeBook,
+  normalizeCommittee,
   normalizePool,
   normalizePositions,
   normalizePrices,
@@ -487,6 +489,7 @@ test("the payload says where its numbers came from", () => {
     "expiries",
     "series",
     "feed",
+    "oracle",
     "trades",
     "volumeBuckets",
     "tape",
@@ -663,3 +666,109 @@ test("only this page, on this machine, may ask the gateway to sign", () => {
   assert.match(String(rejectSigning({ host: "attacker.example" })), /loopback/);
   assert.match(String(rejectSigning({})), /must name its host/);
 });
+
+const COMMITTEE_JSON = {
+  feed_id: "BTC-USD",
+  now_ns: 1,
+  quorum: 2,
+  tolerance_bps: 100,
+  max_age_ns: 120_000_000_000,
+  active_sources: 3,
+  fresh_sources: 2,
+  agreeing_sources: 2,
+  can_fix: true,
+  seats: [
+    {
+      source: "venue-index",
+      price: "67411200000",
+      publish_time_ns: 2,
+      confidence_bps: 9940,
+      seen_at_ns: 1,
+      age_ns: 2_000_000_000,
+      fresh: true,
+    },
+    {
+      source: "kraken",
+      price: "67431500000",
+      publish_time_ns: 3,
+      confidence_bps: 9990,
+      seen_at_ns: 1,
+      age_ns: 1_000_000_000,
+      fresh: true,
+    },
+    {
+      source: "coingecko",
+      price: null,
+      publish_time_ns: 0,
+      confidence_bps: 0,
+      seen_at_ns: 0,
+      age_ns: 900_000_000_000,
+      fresh: false,
+    },
+  ],
+  last_fix: {
+    price: "67431500000",
+    publish_time_ns: 3,
+    confidence_bps: 9991,
+    dispersion_bps: 4,
+    sources: ["venue-index", "kraken"],
+    fixed_at_ns: 4,
+  },
+};
+
+test("the committee panel says who may settle and what they said", () => {
+  const view = normalizeCommittee(COMMITTEE_JSON);
+  assert.ok(view);
+  assert.equal(view.feed, feedFor("BTC"), "one asset, one feed the settlement can come from");
+  assert.equal(view.quorum, 2);
+  assert.equal(view.toleranceBps, 100);
+  assert.deepEqual(view.seats.map((seat) => seat.source), ["venue-index", "kraken", "coingecko"]);
+  assert.equal(view.seats[0].price, 67_411.2, "the chain's units become dollars here, not in the contract");
+  assert.equal(view.seats[0].ageS, 2, "the oracle measured the age on its own clock");
+  assert.equal(view.seats[2].price, null, "a seat that never spoke is absent rather than zero");
+  assert.equal(view.seats[2].fresh, false);
+  assert.equal(view.freshSeats, 2);
+  assert.equal(view.canFix, true);
+  assert.deepEqual(view.lastFix?.sources, ["venue-index", "kraken"]);
+  assert.equal(view.lastFix?.price, 67_431.5);
+
+  // Our index said 67,411.20 and the committee settled on 67,431.50. The screen
+  // shows that three basis points of distance rather than pretending the two are
+  // the same number — the whole point of the panel is that the venue is not the
+  // referee of its own market.
+  assert.equal(view.disagreementBps, 3);
+
+  assert.equal(normalizeCommittee(null), null, "an oracle that did not answer is not a committee of zero");
+  assert.equal(normalizeCommittee(undefined), null);
+  const noIndex = normalizeCommittee({ ...COMMITTEE_JSON, seats: [COMMITTEE_JSON.seats[1]] });
+  assert.equal(noIndex?.disagreementBps, null, "nothing to compare the fix against");
+  const noFix = normalizeCommittee({ ...COMMITTEE_JSON, last_fix: null });
+  assert.equal(noFix?.lastFix, null);
+  assert.equal(noFix?.disagreementBps, null);
+});
+
+test("a settled ticket names the seats that priced it", () => {
+  const settled = normalizePositions(
+    [
+      {
+        ...POSITION_JSON,
+        settlement: "Fixed",
+        fixed_price: "67431500000",
+        settle_sources: ["kraken", "coingecko"],
+      },
+    ],
+    "vault.testnet",
+  )[0];
+  assert.deepEqual(settled.settleSources, ["kraken", "coingecko"]);
+  assert.equal(settled.fixedPrice, 67_431.5);
+
+  // A series that has not settled has no names attached, and an older payload
+  // without the field must not read as an empty committee.
+  assert.deepEqual(normalizePositions([POSITION_JSON], "vault.testnet")[0].settleSources, []);
+
+  const book = buildPortfolio([settled], {}, Date.UTC(2026, 9, 30, 12));
+  assert.deepEqual(book.rows[0].settleSources, ["kraken", "coingecko"]);
+  assert.equal(book.rows[0].settlement, "fixed");
+  assert.equal(book.rows[0].closable, false, "a settled ticket is paid out, not closed");
+});
+

@@ -31,7 +31,7 @@ Evidence: `evidence/chain/2026-10-29-onchain-demo.txt`,
 | take | `fill_market_order` | 1 ticket #6 for 0.15, `worst_unit_premium` 0.05 |
 | rest | `post_bid` | bid #6, 3 @ 0.12 |
 | close | `close_ticket` | 0.12 paid, `you` 4,999,999.67 → 4,999,999.79 |
-| fix | `report` + `request_settlement` | `{"Fixed":{"price":2420500000,…}}` via the oracle callback |
+| fix | `submit_observations` (two seats) + `request_settlement` | `{"Fixed":{"price":2420500000,…}}` via the oracle callback, with `settle_sources` naming who signed it |
 | settle | `settle_ticket` | 61.50 to the holder, 238.65 back to the maker |
 | audit | `expected_custody` vs `ft_balance_of` | 45,000,000.00 = 45,000,000.00 · conserved |
 
@@ -52,7 +52,7 @@ the product is now. Evidence: `evidence/chain/vault-lifecycle.txt`.
 | write | `pool_buy` 3 with a 0.16 budget | premium **0.156** all-in, worst case **300**, margin inside it **0.006** · 2.3 Tgas |
 | state | `get_pool_state` | equity 1,000,000.150 · reserved 299.850 · free 999,700.300 · utilisation 0.02% · margin locked 0.006 |
 | greed | `pool_sweep` while the ticket is open | **0.000** — that margin is a void's refund source, not the venue's yet |
-| fix | `report` 2209.00, below the low strike | the call expires worthless |
+| fix | `submit_observations` 2209.00 from two seats, below the low strike | the call expires worthless |
 | settle | `settle_ticket` | 0.00 to the buyer, 0.00 to the maker: the vault keeps the premium it collected |
 | pay | `pool_sweep` | **0.006**, earned now that no void can call for it |
 | exit | `pool_withdraw` | 1,000,000.150 back for 1,000,000 in — the LP's whole return on that risk |
@@ -91,7 +91,7 @@ The SDK's JSON is not uniform and the failure is a panic inside the contract:
 | Piece | Where | Reason |
 | --- | --- | --- |
 | Order book, matching, escrow, settlement, custody | **contract** | This is the product. It must not be trusted. |
-| Price index (median of Binance/Coinbase/Bybit prints) | off-chain feed → `report` | A contract cannot open a websocket. The feed is the oracle's input, and `min_confidence_bps` is what stops one venue from settling the market. |
+| Price index (median of Binance/Coinbase/Bybit prints) | off-chain feed → one seat of the oracle | A contract cannot open a websocket. The feed is one input among four signed sources, and a fix needs a quorum of them plus `min_confidence_bps` — which is what stops one venue, including our own, from settling the market alone. |
 | Quote *decisions* (what the pool writes, at what price) | the Rust engine | Deciding a price costs no trust; publishing it does. The engine calls `core::fees`, the same module the contract calls, and the contract still refuses anything outside its bounds. |
 | UI, ladder rendering, PnL display | browser | Presentation. |
 

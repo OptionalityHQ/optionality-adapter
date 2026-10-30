@@ -135,8 +135,10 @@ runs inside one expiry.
   A ladder past its expiry drops out of `/health`, so the operator stops listing it and
   the screen stops defaulting to it.
 - The operator lists every ladder in the schedule as soon as one is missing from the
-  chain (`ladder_is_listed`) instead of waiting for its own minute cadence, and walks the
-  ladders in rotation to quote them.
+  chain (`ladder_is_listed`) instead of waiting for its own minute cadence, and renews
+  each ladder against its **own** quote deadline — sixty seconds for a market inside the
+  day, three hundred for one a week out — rather than walking a fixed rotation that left
+  the near ladders unquoted for minutes at a time.
 - The gateway resolves the expiry *before* reading the engine, so a ladder days out shows
   its own marks and its own greeks; while a new ladder is being listed it falls back to
   the nearest one the chain holds, so the screen never shows marks with no counterparty.
@@ -174,7 +176,54 @@ Verified in the browser on a three-minute tenor: buy → hold to expiry → the 
 Close for **Settle · up to $100.00** → `settled 1 ticket(s)` → realised −$1.79 → +$0.391,
 cash +$11.29, and the history row reads `the print`, not a pool sale that never happened.
 
-## 8. Not exploited, and why
+## 8. The venue settled on its own print — fixed
+
+The contract asked an oracle for a price and paid the ticket on what came back. That
+oracle was a second contract with one `reporter` account, and the reporter was the same
+process that reads the exchange sockets and quotes the vault. Whoever held that key
+decided, alone, which holder got paid: a bug in the operator, a compromised host, or a
+swapped session file all looked exactly like a normal settlement on chain. The engine's
+`live`/`degraded` rules protected the *number*, and nothing protected the *authority*.
+
+- Sources are **seats**, not accounts. Each registers an ed25519 key and signs every
+  observation — feed, source, price, stamp, confidence. The byte layout lives in
+  `bounded_core::oracle`, imported by both the contract and the relay, so the two cannot
+  drift into a world where every signature is simply refused. The relay delivers prices;
+  it cannot speak for a seat it does not hold the key for.
+- An observation is a candidate. It becomes a **fix** only when a quorum of distinct fresh
+  seats agree inside a tolerance band: the fix is the median of the *agreeing* subset, so
+  one lagging venue excludes itself instead of vetoing the market. A fix carries its
+  dispersion, the confidence derived from it, and the names of who signed.
+- The venue keeps its own floor and does not delegate it. `usable_fix` refuses a price
+  outside the series' band, stamped outside its own accept window, under
+  `min_confidence_bps` — **or named by fewer than two sources**. A friendly oracle that
+  hands over one signature gets one answer: the series stays open and voids at the
+  deadline, refunding the premium.
+- `settle_sources` and `settle_dispersion_bps` are stored on the series, so a ticket that
+  paid out says who priced it — from the chain, years later — and the screen shows it in
+  the Oracle panel and on the settled row.
+- The running venue seats four sources: its own three-venue index, Kraken, OKX and
+  CoinGecko. Three of them are not us. Stopping the engine removes one vote and the
+  committee still fixes; it also no longer takes the screen down, because `/state` falls
+  back to the cells the chain lists when the model is unreachable.
+
+Tests: `one_source_alone_is_never_a_fix`, `a_signature_from_another_seat_does_not_count`,
+`a_lagging_seat_cannot_veto_the_committee`, `a_stale_seat_stops_counting`,
+`removing_a_seat_ends_its_vote_but_not_its_record` in the oracle's 17; and in the sandbox,
+`one_source_alone_cannot_settle_a_ticket`,
+`a_committee_that_barely_agrees_cannot_meet_a_confident_series` and
+`a_fix_outside_the_series_band_is_still_not_a_price`, while
+`full_lifecycle_settles_and_pays_out` now proves the payout happens with the venue's own
+seat saying nothing.
+
+What is *not* claimed: the four keys are generated per boot and held by one process on one
+machine. Three of the prices come from operators we do not run, which is the point, but the
+transport is still ours and a seat's key is not rotated or stored in an HSM. The next
+increment is a real adapter — an on-chain aggregator read over a public RPC, which this
+machine can already reach (`arb1.arbitrum.io/rpc` answers `eth_call`; Pyth's Hermes now
+requires an API key) — and a second relay on a second host.
+
+## 9. Not exploited, and why
 
 | surface | status |
 | --- | --- |

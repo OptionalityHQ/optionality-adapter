@@ -17,7 +17,7 @@ A first-stage implementation of option A now exists in [the NEAR prototype](../n
 | On-chain market order sweeping a per-series book with a premium budget | Implemented (`fill_market_order`, `get_book`, `prune_offers`), sandbox-tested |
 | Acceptance-test suite: conservation at every quiescent point | Implemented, asserted in every flow |
 | Market economics study (premium vs collateral, maker ROI, slippage, fill rate) | Simulated locally against the same integer ledger, [report retained](../evidence/sim/2026-10-28-market-report.txt) |
-| Live BTC/ETH price ingestion (Binance + Coinbase + Bybit streams, median, dispersion, staleness) | Implemented for the demo and the economics study; the on-chain oracle is still a trusted reporter |
+| Live BTC/ETH price ingestion (Binance + Coinbase + Bybit streams, median, dispersion, staleness) | Implemented for the demo and the economics study. It is one seat at the settlement committee, which now needs a quorum of independently signed prices before a ticket pays |
 | Derive-shaped trading screen (chain ladder, two-leg ticket, payoff/greeks, book, positions) | Built on that live feed, still not connected to a deployed contract |
 | Real oracle callback, funded makers, storage rent, audit, deployment | Not done |
 

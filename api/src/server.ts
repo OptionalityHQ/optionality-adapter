@@ -13,7 +13,15 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { Chain } from "./chain.ts";
 import { type Asset, type Kind, type LadderSide, type PoolPrice, SCALE, Tape, amount, fromUnits, rejectSigning } from "./gateway.ts";
-import { type EngineMarks, type Views, type Registry, SERIES_WINDOW, gatherState, registryForExpiry, seriesStrike } from "./gather.ts";
+import {
+  type EngineMarks,
+  type Registry,
+  type Views,
+  gatherState,
+  registryForExpiry,
+  registryPairs,
+  seriesStrike,
+} from "./gather.ts";
 import { type Call, describe, planAction } from "./actions.ts";
 import { marksFromEngine, mergeSide, normalizeBids, normalizeBook, normalizePool, normalizePrices, normalizePositions } from "./gateway.ts";
 
@@ -36,7 +44,8 @@ function viewsFor(chain: Chain): Views {
       const stats = (await chain.view("stats")) as { series_count: number };
       return Array.from({ length: stats.series_count }, (_unused, index) => index);
     },
-    getSeries: (seriesId) => chain.view("get_series", { series_id: seriesId }),
+    getSeriesMany: async (seriesIds) =>
+      (await chain.view("get_series_many", { series_ids: seriesIds })) as Array<[number, unknown]>,
     getBook: (seriesId, limit) => chain.view("get_book", { series_id: seriesId, limit }),
     getBids: (seriesId, limit) => chain.view("get_bids", { series_id: seriesId, limit }),
     getPoolState: () => chain.view("get_pool_state"),
@@ -45,6 +54,7 @@ function viewsFor(chain: Chain): Views {
     getPoolPrices: (seriesIds, quantityUnits) =>
       chain.view("get_pool_prices", { series_ids: seriesIds, quantity: quantityUnits }),
     getPositions: (account) => chain.view("get_positions", { account, limit: 100 }),
+    getCommittee: (feed) => chain.oracleView("get_committee", { feed_id: feed }),
     getBalance: (account) => chain.view("get_balance", { account_id: account }) as Promise<string>,
     expectedCustody: () => chain.view("expected_custody") as Promise<string>,
     getLpShares: (account) => chain.view("get_lp_shares", { account_id: account }) as Promise<string>,
@@ -233,9 +243,7 @@ async function main(): Promise<void> {
     expiry: string,
     quantity: number,
   ) => {
-    const ids = await views.seriesIds();
-    const pairs: Array<[number, unknown]> = [];
-    for (const seriesId of ids.slice(-SERIES_WINDOW)) pairs.push([seriesId, await views.getSeries(seriesId)]);
+    const pairs = await registryPairs(views);
     // The ladder for the expiry the click is about, not the nearest one: the two
     // are a week apart and the marks differ by the tenor.
     const wanted = expiryWanted(expiry, await engineExpiries());
@@ -361,7 +369,12 @@ async function main(): Promise<void> {
         try {
           const [expiries, feed] = await Promise.all([engineExpiries(), feedFromEngine()]);
           const expiry = expiryWanted(wanted, expiries);
-          const { rows, spot } = await engineRows(requestedAsset, expiry);
+          // A dead engine is not a dead venue. The marks go absent and the grid
+          // falls back to the cells the chain lists, which is what lets the screen
+          // keep showing the committee that settles tickets without us.
+          const engine = await engineRows(requestedAsset, expiry).catch(() => null);
+          const rows = engine?.rows ?? [];
+          const spot = engine?.spot ?? null;
           const strikes = rows.map((row) => row.strike);
           const state = await gatherState({
             asset: requestedAsset,

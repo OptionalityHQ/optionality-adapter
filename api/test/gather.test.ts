@@ -65,9 +65,9 @@ function fakeViews(over: Partial<Views> = {}): Views & { calls: string[] } {
       track("seriesIds");
       return Object.keys(SERIES).map(Number);
     },
-    async getSeries(seriesId) {
-      track(`getSeries:${seriesId}`);
-      return SERIES[seriesId] ?? null;
+    async getSeriesMany(ids: number[]) {
+      track("getSeriesMany");
+      return ids.map((seriesId) => [seriesId, SERIES[seriesId] ?? null]);
     },
     async getBook(seriesId) {
       track(`getBook:${seriesId}`);
@@ -101,6 +101,57 @@ function fakeViews(over: Partial<Views> = {}): Views & { calls: string[] } {
         stamp_ns: EXPIRY_NS,
         age_ns: 1_000_000_000,
       }));
+    },
+    async getCommittee(feed: string) {
+      track("getCommittee");
+      return {
+        feed_id: feed,
+        now_ns: 1_793_360_000_000_000_000,
+        quorum: 2,
+        tolerance_bps: 100,
+        max_age_ns: 120_000_000_000,
+        active_sources: 3,
+        fresh_sources: 2,
+        agreeing_sources: 2,
+        can_fix: true,
+        seats: [
+          {
+            source: "venue-index",
+            price: "105000000",
+            publish_time_ns: 1,
+            confidence_bps: 9900,
+            seen_at_ns: 1,
+            age_ns: 2_000_000_000,
+            fresh: true,
+          },
+          {
+            source: "kraken",
+            price: "105010000",
+            publish_time_ns: 2,
+            confidence_bps: 9900,
+            seen_at_ns: 1,
+            age_ns: 1_000_000_000,
+            fresh: true,
+          },
+          {
+            source: "coingecko",
+            price: null,
+            publish_time_ns: 0,
+            confidence_bps: 0,
+            seen_at_ns: 0,
+            age_ns: 0,
+            fresh: false,
+          },
+        ],
+        last_fix: {
+          price: "105010000",
+          publish_time_ns: 2,
+          confidence_bps: 9991,
+          dispersion_bps: 9,
+          sources: ["venue-index", "kraken"],
+          fixed_at_ns: 3,
+        },
+      };
     },
     async getPoolState() {
       track("getPoolState");
@@ -364,6 +415,33 @@ test("a cell the engine cannot price still shows the chain", async () => {
   assert.equal(state.positions.rows[0].mark, null, "and no position can be marked");
 });
 
+test("with the engine down, the chain's own cells are the grid", async () => {
+  // The reviewer's question is "what happens when your price engine dies?" — and
+  // the answer has to be a screen, not an error: the ladder falls back to the
+  // cells the contract lists, and the committee that settles tickets without us
+  // is still on it.
+  const state = await gatherState({
+    asset: "ETH",
+    expiry: DAY,
+    strikes: [],
+    account: "you.testnet",
+    vault: "vault.testnet",
+    views: fakeViews(),
+    marks: { side: () => null },
+    spot: null,
+  });
+  assert.deepEqual(
+    state.chain.map((row) => row.strike),
+    [2_400, 2_450],
+    "both cells the chain lists, in strike order",
+  );
+  assert.equal(state.chain[0].call?.ask, 0.05, "the resting offer prices the cell");
+  assert.equal(state.chain[0].call?.markIv, null, "and nothing pretends to be a model");
+  assert.ok(state.oracle, "the settlement committee is read from the oracle, not the engine");
+  assert.equal(state.oracle?.canFix, true);
+  assert.equal(state.spot, null);
+});
+
 test("only the series for this expiry are read from the chain", async () => {
   const views = fakeViews();
   await gatherState({
@@ -376,7 +454,11 @@ test("only the series for this expiry are read from the chain", async () => {
     marks: fakeMarks(),
     spot: 1,
   });
-  assert.ok(views.calls.includes("getSeries:5"), "every id is read to learn its day");
+  assert.equal(
+    views.calls.filter((call) => call === "getSeriesMany").length,
+    1,
+    "one batched read learns every id's day, rather than one call per series",
+  );
   assert.ok(!views.calls.includes("getBook:5"), "but a series from another day is not quoted");
   assert.ok(!views.calls.includes("getBook:6"));
   assert.ok(views.calls.includes("getBook:2"));

@@ -28,7 +28,9 @@ import {
   expiryChips,
   fromUnits,
   normalizeBids,
+  feedFor,
   normalizeBook,
+  normalizeCommittee,
   normalizePool,
   normalizePrices,
   normalizePositions,
@@ -44,7 +46,10 @@ export { seriesStrike } from "./gateway.ts";
 /** Every read the gateway needs, as the contract exposes it. */
 export interface Views {
   seriesIds(): Promise<number[]>;
-  getSeries(seriesId: number): Promise<unknown>;
+  /** Several series in one round trip, as `[[id, series | null]]`. The registry
+   * is derived — the contract is the only record of which strikes exist — and one
+   * read per series made every screen refresh hundreds of round trips. */
+  getSeriesMany(seriesIds: number[]): Promise<Array<[number, unknown]>>;
   getBook(seriesId: number, limit: number): Promise<unknown>;
   getBids(seriesId: number, limit: number): Promise<unknown>;
   getPoolState(): Promise<unknown>;
@@ -52,6 +57,10 @@ export interface Views {
    * venue has not quoted — or has quoted too long ago — is simply absent. */
   getPoolPrices(seriesIds: number[], quantityUnits: string): Promise<unknown>;
   getPositions(account: string): Promise<unknown>;
+  /** The settlement committee's own view of one feed, read from the oracle — a
+   * different contract from the market, and the only party that knows who signed
+   * a settlement price. */
+  getCommittee(feed: string): Promise<unknown>;
   getBalance(account: string): Promise<string | number | bigint>;
   getLpShares(account: string): Promise<string | number | bigint>;
   getLpValue(account: string): Promise<string | number | bigint>;
@@ -154,6 +163,22 @@ export function registryForExpiry(
  * made a click on it resolve to a week out. */
 export const SERIES_WINDOW = 640;
 
+/** The listed series, newest `SERIES_WINDOW` of them, in as few calls as the
+ * contract allows. Both the screen and the trade path read the registry this way
+ * so neither can invent a second answer about what exists. */
+export async function registryPairs(
+  views: Views,
+  take = SERIES_WINDOW,
+): Promise<Array<[number, unknown]>> {
+  const ids = (await views.seriesIds()).slice(-take);
+  const pairs: Array<[number, unknown]> = [];
+  for (let start = 0; start < ids.length; start += 128) {
+    const batch = await views.getSeriesMany(ids.slice(start, start + 128));
+    for (const [seriesId, raw] of batch) pairs.push([seriesId, raw]);
+  }
+  return pairs;
+}
+
 export interface GatherInput {
   asset: Asset;
   expiry: string;
@@ -179,17 +204,22 @@ export interface GatherInput {
 
 /** Read one snapshot of the chain and turn it into the screen's payload. */
 export async function gatherState(input: GatherInput): Promise<StatePayload> {
-  const ids = await input.views.seriesIds();
+  const pairs = await registryPairs(input.views);
+  const registry = registryForExpiry(pairs, input.expiry, input.asset);
   // Cap the read: a live venue accumulates series every day, and the screen only
   // shows the ones it can price. The schedule lists seven ladders of about
   // seventy-five series, so the window has to hold all of them — newest first,
   // because that is the order the operator listed them in.
-  const recent = ids.slice(-SERIES_WINDOW);
-  const pairs: Array<[number, unknown]> = [];
-  for (const seriesId of recent) {
-    pairs.push([seriesId, await input.views.getSeries(seriesId)]);
-  }
-  const registry = registryForExpiry(pairs, input.expiry, input.asset);
+
+  // The engine names the grid it is marking. When it is not answering — and it
+  // will be stopped in front of a reviewer at least once, to show that a ticket
+  // still settles without it — the chain's own listed cells are the grid, so the
+  // screen shows resting quotes, the vault's last prices and the committee rather
+  // than an error. A cell with no mark already renders as an absent mark.
+  const strikes =
+    input.strikes.length > 0
+      ? input.strikes
+      : [...new Set(registry.list.map((info) => seriesStrike(info)))].sort((a, b) => a - b);
 
   const books: Record<number, ReturnType<typeof normalizeBook>> = {};
   const bids: Record<number, ReturnType<typeof normalizeBids>> = {};
@@ -200,7 +230,7 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
 
   const marksByCell: Record<string, MarkSide> = {};
   for (const kind of ["Put", "Call"] as const) {
-    for (const strike of input.strikes) {
+    for (const strike of strikes) {
       const side = input.marks.side(input.asset, kind, strike);
       // A cell the engine cannot price stays absent: the ladder shows the chain's
       // resting quotes for it and no mark, rather than inventing a mid.
@@ -241,7 +271,7 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
   }
 
   const chain: LadderRow[] = buildLadder({
-    strikes: input.strikes,
+    strikes,
     marks: marksByCell,
     books,
     bids,
@@ -280,6 +310,10 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
       };
     }
   }
+
+  // The committee is read from the oracle rather than the market: the point of
+  // the panel is that these are not the venue's numbers.
+  const oracle = normalizeCommittee(await input.views.getCommittee(feedFor(input.asset)));
 
   const stats = await input.views.stats();
   const custody = buildCustody(
@@ -352,6 +386,7 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
     expiries,
     series,
     feed: input.feed ?? null,
+    oracle,
     tape: input.tape ?? new Tape(),
     you: { account: input.account, available: youAvailable, wallet: youWallet },
     lp,

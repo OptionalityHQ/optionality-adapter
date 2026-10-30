@@ -174,24 +174,11 @@ export class Chain {
     );
   }
 
-  /** The settlement print. The oracle's reporter is the admin account. */
-  async report(price: number, { feed = "ETH-USD", confidenceBps = 9000 }: { feed?: string; confidenceBps?: number } = {}) {
-    const account = await this.account("admin");
-    const outcome = await account.functionCall({
-      contractId: this.oracle,
-      methodName: "report",
-      args: {
-        feed_id: feed,
-        // The oracle stores a raw u128, which the SDK reads as a JSON number;
-        // the market's own amounts are U128 wrappers and read as strings.
-        price: Number(price),
-        publish_time_ns: Number(BigInt(Date.now()) * 1_000_000n),
-        confidence_bps: confidenceBps,
-      },
-      gas: TGAS,
-      attachedDeposit: 0n,
-    });
-    return { hash: outcome.transaction.hash };
+  /** A read from the oracle. It is a separate contract from the market, and the
+   * only party that knows which seats signed the price a ticket settled on. */
+  async oracleView(method: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    const account = await this.account("you");
+    return account.viewFunction({ contractId: this.oracle, methodName: method, args });
   }
 
   /** The contract returns U128, which serialises as a bare JSON string. */
