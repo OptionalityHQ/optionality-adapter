@@ -476,6 +476,29 @@ test("every planned call has a sentence the trader can read", () => {
   assert.equal(describe([], {}, context()), "done");
 });
 
+test("a resting order can be taken back, on the book it belongs to", () => {
+  const offer = planAction({ type: "cancel", side: "sell", id: 7 }, context());
+  assert.equal(first(offer).method, "cancel_offer");
+  assert.equal(first(offer).args.offer_id, 7);
+  const bid = planAction({ type: "cancel", side: "buy", id: 12 }, context());
+  assert.equal(first(bid).method, "cancel_bid");
+  assert.equal(first(bid).args.bid_id, 12);
+  // The two books number their rows independently, so an id without a side is
+  // not enough to know which one to cancel.
+  assert.throws(() => planAction({ type: "cancel", side: "sell" }, context()), /order id/);
+  assert.throws(() => planAction({ type: "cancel", side: "sell", id: "x" }, context()), /order id/);
+  assert.equal(describe(offer, { type: "cancel", side: "sell", id: 7, quantity: 3 }, context()), "cancelled the offer holding 3x");
+});
+
+test("a ticket can be settled by id after the ladder has rolled past its series", () => {
+  // No series resolves in this context — the cell is two tenors old — and the
+  // settle still plans, because the contract already knows the series.
+  const calls = planAction({ type: "settle", ticket: 9 }, context({ seriesFor: () => null } as never));
+  assert.equal(first(calls).method, "settle_ticket");
+  assert.equal(first(calls).args.ticket_id, 9);
+  assert.equal(describe(calls, { type: "settle", ticket: 9 }, context()), "settled 1 ticket(s)");
+});
+
 test("legs come from the same geometry the ladder uses", () => {
   assert.deepEqual(legsOf("ETH", "Put", 2_400), { low: 2_300, high: 2_400 });
   assert.deepEqual(legsOf("BTC", "Call", 100_000), { low: 100_000, high: 104_000 });

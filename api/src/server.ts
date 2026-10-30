@@ -382,6 +382,8 @@ async function main(): Promise<void> {
             strike?: number;
             quantity?: number | string;
             expiry?: string;
+            id?: number | string;
+            side?: string;
           };
           const asset = (parsed.asset === "BTC" ? "BTC" : "ETH") as Asset;
           const kind = (parsed.kind === "Call" ? "Call" : "Put") as Kind;

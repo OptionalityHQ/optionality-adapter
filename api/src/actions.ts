@@ -74,6 +74,10 @@ export interface ActionBody {
   amount?: number | string;
   shares?: number | string;
   expiry?: string;
+  /** A resting order's id, for the cancel path. */
+  id?: number | string;
+  /** Which book the id belongs to: offers and bids number their own. */
+  side?: string;
 }
 
 const TGAS = 30n;
@@ -326,6 +330,14 @@ function planExpire(context: Context, body: ActionBody): Call[] {
 }
 
 function planSettle(context: Context, body: ActionBody): Call[] {
+  // A ticket outlives the ladder it was written on. By the time its series is
+  // fixed the screen may be looking at a tenor that did not exist when the
+  // ticket was bought, so a settle addressed by ticket id needs nothing on the
+  // ladder to resolve — the contract already knows which series it belongs to.
+  const ticket = Number(body.ticket);
+  if (Number.isInteger(ticket)) {
+    return [{ contract: "options", method: "settle_ticket", args: { ticket_id: ticket }, tgas: TGAS }];
+  }
   const series = requireSeries(context, body);
   if (series.settlement !== "fixed" && series.settlement !== "void") {
     throw new Error("this series has not settled yet");
@@ -393,6 +405,25 @@ export function planWithdraw(body: ActionBody): Call {
   };
 }
 
+/**
+ * Take a resting order back off the book.
+ *
+ * `cancel_offer` and `cancel_bid` number their own rows, so the side decides
+ * which method the id belongs to. The premium or the collateral the order holds
+ * comes back to its owner in the same call — there is nothing to reconcile.
+ */
+export function planCancel(body: ActionBody): Call {
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id < 0) throw new Error("cancelling needs the order id");
+  const buying = body.side === "buy";
+  return {
+    contract: "options",
+    method: buying ? "cancel_bid" : "cancel_offer",
+    args: buying ? { bid_id: id } : { offer_id: id },
+    tgas: TGAS,
+  };
+}
+
 /** One entry point, the same shape the screen already posts. */
 export function planAction(body: ActionBody, context: Context): Call[] {
   switch (body.type) {
@@ -413,6 +444,8 @@ export function planAction(body: ActionBody, context: Context): Call[] {
       return [planPoolWithdraw(body)];
     case "withdraw":
       return [planWithdraw(body)];
+    case "cancel":
+      return [planCancel(body)];
     default:
       throw new Error(`unknown action "${body.type}"`);
   }
@@ -444,6 +477,10 @@ export function describe(calls: Call[], body: ActionBody, context: Context): str
       return `bid resting at ${Number(body.limit).toFixed(4)}`;
     case "post_offer":
       return `offer resting at ${Number(body.limit).toFixed(4)}`;
+    case "cancel_offer":
+      return `cancelled the offer holding ${Number(body.quantity ?? 1).toFixed(0)}x`;
+    case "cancel_bid":
+      return `cancelled the bid holding ${Number(body.quantity ?? 1).toFixed(0)}x`;
     case "request_settlement":
       return "asked the oracle to fix the series";
     case "settle_ticket":

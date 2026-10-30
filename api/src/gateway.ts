@@ -512,6 +512,8 @@ export function buildLadder(input: {
 // ---------- the rest of the payload ----------
 
 export interface OrderRow {
+  /** The offer or bid id on its own book, for `cancel_offer`/`cancel_bid`. */
+  id: number;
   series: string;
   seriesId: number;
   side: "buy" | "sell";
@@ -532,6 +534,7 @@ export function buildOrders(
   for (const entry of books) {
     for (const level of entry.levels) {
       rows.push({
+        id: level.offerId,
         series: entry.ticker,
         seriesId: entry.seriesId,
         side: "sell",
@@ -546,6 +549,7 @@ export function buildOrders(
   for (const entry of bids) {
     for (const level of entry.levels) {
       rows.push({
+        id: level.bidId,
         series: entry.ticker,
         seriesId: entry.seriesId,
         side: "buy",

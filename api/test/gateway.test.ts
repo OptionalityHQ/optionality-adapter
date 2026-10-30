@@ -356,6 +356,10 @@ test("orders are the whole resting book, best price first", () => {
   );
   assert.equal(orders.length, 2);
   assert.equal(orders[0].side, "sell", "0.05 sorts above 0.04");
+  // The row carries the id its own book knows it by, so a trader can cancel what
+  // they posted without the page guessing which of two id spaces it is in.
+  assert.equal(orders[0].id, BOOK_ROW.offer_id);
+  assert.equal(orders[1].id, BID_ROW.bid_id);
   assert.equal(orders[0].price, 0.05);
   assert.equal(orders[1].side, "buy");
   assert.equal(orders[1].who, "bidder-1.testnet");
