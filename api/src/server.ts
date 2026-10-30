@@ -39,6 +39,14 @@ const SESSION = arg("--session", "data/chain-session.json");
 const DEMO = arg("--demo", "demo/index.html");
 const STREAM_MS = Number(arg("--stream-ms", "700"));
 
+/**
+ * The demo account's floor and top-up, in the token's micro-units: 1,000 and 5,000
+ * USDT. A reset only fires when the visitor is actually short, so pressing it twice
+ * does not mint a fortune.
+ */
+const DEMO_FLOOR = 1_000e6;
+const DEMO_TOPUP = 5_000e6;
+
 /** This process's own record of the session: one sample a second, five minutes deep. */
 const history = new History();
 
@@ -416,6 +424,51 @@ async function main(): Promise<void> {
           const view = projectSmile(await response.json(), Date.now());
           if (!view) throw new Error("the engine answered a smile this gateway does not recognise");
           json(200, view);
+        } catch (error) {
+          json(500, { ok: false, error: String(error instanceof Error ? error.message : error) });
+        }
+      })();
+    }
+    if (url.pathname === "/demo/reset" && request.method === "POST") {
+      // The demo account is funded from the sandbox's own mint, so a visitor who
+      // has spent the opening balance can get back to testing without a restart.
+      // Same origin guard as every other signing route.
+      const foreign = rejectSigning({
+        host: request.headers.host,
+        origin: request.headers.origin as string | undefined,
+      });
+      if (foreign !== null) return json(403, { ok: false, error: foreign });
+      return void (async () => {
+        try {
+          const account = you;
+          const held = Number(await views.getBalance(account));
+          if (held >= DEMO_FLOOR) {
+            return json(200, {
+              ok: true,
+              toppedUp: 0,
+              account,
+              available: held / 1e6,
+              note: "the demo account is already funded",
+            });
+          }
+          await chain.call(
+            "admin",
+            "mint",
+            { account_id: account, amount: String(DEMO_TOPUP) },
+            { contract: chain.token },
+          );
+          await chain.call(
+            "you",
+            "ft_transfer_call",
+            { receiver_id: chain.options, amount: String(DEMO_TOPUP), msg: "deposit" },
+            { contract: chain.token, deposit: "1" },
+          );
+          json(200, {
+            ok: true,
+            toppedUp: DEMO_TOPUP / 1e6,
+            account,
+            available: (held + DEMO_TOPUP) / 1e6,
+          });
         } catch (error) {
           json(500, { ok: false, error: String(error instanceof Error ? error.message : error) });
         }
