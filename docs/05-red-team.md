@@ -190,6 +190,16 @@ swapped session file all looked exactly like a normal settlement on chain. The e
   `bounded_core::oracle`, imported by both the contract and the relay, so the two cannot
   drift into a world where every signature is simply refused. The relay delivers prices;
   it cannot speak for a seat it does not hold the key for.
+- The keys are not in the relay either. Each seat runs in its own `oracle-signer`
+  process, generates its key on start and answers one socket question — "sign this" —
+  with its own name baked into the message, so a relay cannot relabel a vote it already
+  holds. The relay's power is now exactly two things it should have: which prices to
+  fetch, and when to deliver them.
+- Freshness has two halves, and the second one was missing at first: a seat is fresh when
+  the relay delivered recently **and** the price itself was published recently. Without
+  the second half a source whose feed stalled could re-sign its last number with a
+  later stamp and keep voting indefinitely — the relay would see a price seconds old and
+  the market would see one an hour old.
 - An observation is a candidate. It becomes a **fix** only when a quorum of distinct fresh
   seats agree inside a tolerance band: the fix is the median of the *agreeing* subset, so
   one lagging venue excludes itself instead of vetoing the market. A fix carries its
@@ -216,12 +226,18 @@ Tests: `one_source_alone_is_never_a_fix`, `a_signature_from_another_seat_does_no
 `full_lifecycle_settles_and_pays_out` now proves the payout happens with the venue's own
 seat saying nothing.
 
-What is *not* claimed: the four keys are generated per boot and held by one process on one
-machine. Three of the prices come from operators we do not run, which is the point, but the
-transport is still ours and a seat's key is not rotated or stored in an HSM. The next
-increment is a real adapter — an on-chain aggregator read over a public RPC, which this
-machine can already reach (`arb1.arbitrum.io/rpc` answers `eth_call`; Pyth's Hermes now
-requires an API key) — and a second relay on a second host.
+One seat is now an adapter rather than a scrape: it reads Pyth's own contract on Base with
+`eth_call`, so the number is the one Pyth's nodes signed and that contract verified, and any
+reviewer can make the same call and get the same bytes. Its publish time is checked like
+every other seat's, which is also how a stale feed is handled: while writing this, Base's
+BTC feed went minutes between updates and its ETH feed was 39 minutes old, so the seat
+simply abstains and the other three settle the market.
+
+What is *not* claimed: reading a contract is not *proof*. A lying RPC could lie to the relay,
+and the bound on that is the quorum, not cryptography — verifying Pyth's signed update inside
+our own contract is the next increment. The four keys are also four processes on one machine
+rather than four operators: independence of prices and of signing, not yet of deployment. A
+seat's key is not rotated and lives in RAM for the life of the sandbox.
 
 ## 9. Not exploited, and why
 
