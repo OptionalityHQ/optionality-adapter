@@ -10,7 +10,7 @@ import {
   planAction,
   type Context,
 } from "../src/actions.ts";
-import { type LadderSide, type MarkSide, type PositionRow, mergeSide, normalizePositions } from "../src/gateway.ts";
+import { type LadderSide, type MarkSide, type PoolPrice, type PositionRow, mergeSide, normalizePositions } from "../src/gateway.ts";
 
 const POSITION = {
   ticket_id: 1,
@@ -39,12 +39,32 @@ const MARK: MarkSide = {
   bidIv: null,
   askIv: null,
   delta: 0.1,
-  poolAsk: 0.052,
-  poolBid: 0.04,
+  gamma: 0,
+  vega: 0,
+  theta: 0,
+  low: 2_400,
+  high: 2_500,
 };
 
+/**
+ * The vault's published price, exactly as `get_pool_prices` answers: one
+ * contract at a 0.0500 mid costs 0.0520 loaded and exits at 0.0450 haircut.
+ * `THREE` is the same quote for the three-contract order most of these plans
+ * are sized at, and the ceiling is over the whole ticket, not three times the
+ * price for one.
+ */
+const ONE: PoolPrice = {
+  seriesId: 2,
+  midUnits: "50000",
+  entryUnits: "52000",
+  exitUnits: "45000",
+  stampNs: 1_793_272_900_000_000_000,
+  ageNs: 0,
+};
+const THREE: PoolPrice = { ...ONE, entryUnits: "156000", exitUnits: "135000" };
+
 function sideOf(over: Partial<LadderSide> = {}): LadderSide {
-  return { ...(mergeSide(MARK, [], [], 2, "open") as LadderSide), ...over };
+  return { ...(mergeSide(MARK, [], [], 2, "open", ONE) as LadderSide), ...over };
 }
 
 function context(over: Partial<Context> = {}): Context {
@@ -63,7 +83,7 @@ function context(over: Partial<Context> = {}): Context {
       settlement: "open",
     }),
     side: sideOf(),
-    mid: 0.05,
+    price: THREE,
     positions: normalizePositions([POSITION], "vault.testnet") as PositionRow[],
     ...over,
   };
@@ -90,13 +110,13 @@ test("quantity is whole contracts or nothing", () => {
   assert.throws(() => contractsOf("abc"), /at least one/);
 });
 
-test("a buy with nobody resting goes to the pool, at the model's mid", () => {
+test("a buy with nobody resting goes to the pool, at the venue's own mid", () => {
   const calls = planAction({ type: "buy", asset: "ETH", kind: "Call", strike: 2_400, quantity: 3, limit: 0.052 }, context());
   assert.equal(calls.length, 1);
   assert.equal(first(calls).method, "pool_buy");
   assert.equal(first(calls).args.series_id, 2);
   assert.equal(first(calls).args.quantity, "3000000");
-  assert.equal(first(calls).args.mid_units, "50000", "the mid is what the pool prices from, not the ask");
+  assert.equal(first(calls).args.mid_units, undefined, "there is no price argument for a caller to lie with");
   assert.equal(first(calls).args.max_total_premium, "156000", "the limit becomes the budget");
   assert.equal(first(calls).tgas, 30n);
 });
@@ -112,39 +132,93 @@ test("a buy takes the book when a resting offer beats the vault", () => {
 });
 
 test("a buy the market has already outpriced is refused before anything is signed", () => {
-  // The limit came from a read one poll old and the venue has moved up. The
-  // contract would call the budget too small; saying what happened, in the
-  // price the trader can act on, is the gateway's job.
-  const side = sideOf({ takeAsk: 0.0612, takeAskFrom: "pool", poolAsk: 0.0612, ask: 0.0612 });
+  // The limit came from a read one poll old and the venue has moved up to a
+  // 0.0600 mid. The contract would call the budget too small; saying what
+  // happened, in the price the trader can act on, is the gateway's job — and it
+  // is the contract's own total it compares against, not a per-contract guess.
+  const six: PoolPrice = { ...ONE, midUnits: "60000", entryUnits: "62400", exitUnits: "54000" };
+  const side = sideOf({ takeAsk: 0.0624, takeAskFrom: "pool", poolAsk: 0.0624, ask: 0.0624 });
   assert.throws(
-    () => planAction({ type: "buy", strike: 2_400, quantity: 1, limit: 0.055 }, context({ side })),
-    /the ask moved to 0\.0612 · your limit was 0\.0550/,
+    () => planAction({ type: "buy", strike: 2_400, quantity: 1, limit: 0.055 }, context({ side, price: six })),
+    /the ask moved to 0\.0624 · more than 1% past your 0\.0550/,
   );
   // At the new price the same click plans normally.
-  assert.equal(
-    first(planAction({ type: "buy", strike: 2_400, quantity: 1, limit: 0.0612 }, context({ side }))).method,
-    "pool_buy",
-  );
+  const plans = planAction({ type: "buy", strike: 2_400, quantity: 1, limit: 0.0624 }, context({ side, price: six }));
+  assert.equal(first(plans).method, "pool_buy");
+  assert.equal(first(plans).args.max_total_premium, "62400", "the bound follows the quote the vault is on");
   // And a cell the vault refuses to write, with no one resting behind it, has no
   // price to buy at: 0.00 would be a number a click could not fill.
   assert.throws(
     () =>
       planAction(
         { type: "buy", strike: 2_400, quantity: 1, limit: 0.05 },
-        context({ side: sideOf({ takeAsk: null, takeAskFrom: null, ask: 0, poolAsk: null }) }),
+        context({ side: sideOf({ takeAsk: null, takeAskFrom: null, ask: 0, poolAsk: null }), price: null }),
       ),
     /nothing is offering/,
   );
+  // The belt-and-braces half: a book price to route by is not a vault quote to
+  // trade at, so a plan with nothing published still refuses rather than
+  // inventing a mid.
+  assert.throws(
+    () => planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.052 }, context({ price: null })),
+    /vault is not writing/,
+  );
 });
 
-test("the mid comes from the engine or the plan refuses to invent one", () => {
+test("a market buy pays the price the venue is quoting, within 1%", () => {
+  // The ladder the trader read is one poll old. A half-percent move is the index
+  // doing its job, not a different trade, so the order fills at the contract's
+  // own number rather than bouncing off a limit nobody meant as a ceiling.
+  const drifted: PoolPrice = { ...THREE, midUnits: "50250", entryUnits: "157000" };
+  const calls = planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.052 }, context({ price: drifted }));
+  assert.equal(first(calls).method, "pool_buy");
+  assert.equal(first(calls).args.mid_units, undefined, "the venue moved its quote; the order carries no price to agree to");
+  assert.equal(first(calls).args.max_total_premium, "157000", "the budget rises to what the contract charges");
+  assert.equal(describe(calls, { type: "buy", quantity: 3, limit: 0.052 }, context({ price: drifted })),
+    "bought 3x from the pool at 0.0523 all-in");
+
+  // Beyond a percent, the click was never an agreement to this price.
   assert.throws(
-    () => planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.052 }, context({ mid: null })),
-    /no mark/,
+    () =>
+      planAction(
+        { type: "buy", strike: 2_400, quantity: 3, limit: 0.052 },
+        context({ price: { ...THREE, entryUnits: "158000" } }),
+      ),
+    /the ask moved to 0\.0527 · more than 1% past your 0\.0520/,
   );
+  // Cheaper is never a problem: the budget stays the trader's own.
+  const cheaper = planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.052 }, context());
+  assert.equal(first(cheaper).args.max_total_premium, "156000");
+});
+
+test("a book take gets the same tolerance, in the offer's own units", () => {
+  const calls = planAction(
+    { type: "buy", strike: 2_400, quantity: 3, limit: 0.05 },
+    context({ side: sideOf({ takeAsk: 0.0502, takeAskFrom: "book", bestOfferId: 0 }) }),
+  );
+  assert.equal(first(calls).method, "fill_market_order");
+  assert.equal(first(calls).args.max_total_premium, "150600", "3 × the resting offer, not 3 × the stale screen");
+  assert.throws(
+    () =>
+      planAction(
+        { type: "buy", strike: 2_400, quantity: 3, limit: 0.05 },
+        context({ side: sideOf({ takeAsk: 0.0512, takeAskFrom: "book", bestOfferId: 0 }) }),
+      ),
+    /more than 1%/,
+  );
+});
+
+test("the vault's price is read for the whole quantity, never multiplied", () => {
+  // Three contracts cost 0.1560, which is 0.0520 each only because the ceiling
+  // lands even here. A planner that multiplied the one-contract ask would be a
+  // planner that occasionally signed a budget the contract calls too small.
+  const calls = planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.052 }, context());
+  assert.equal(first(calls).args.mid_units, undefined);
+  assert.equal(describe(calls, { type: "buy", quantity: 3, limit: 0.052 }, context()), "bought 3x from the pool at 0.0520 all-in");
   assert.throws(
     () => planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0 }, context()),
     /limit price/,
+    "a click with no price is not a click with a cheap price",
   );
 });
 
@@ -191,7 +265,7 @@ test("a sell against the pool closes into the vault; a sell against a person nee
   const toPool = planAction({ type: "sell", strike: 2_400, quantity: 3, ticket: 1 }, context());
   assert.equal(first(toPool).method, "pool_close");
   assert.equal(first(toPool).args.ticket_id, 1);
-  assert.equal(first(toPool).args.mid_units, "50000");
+  assert.equal(first(toPool).args.min_exit_units, null, "a close with no floor asks for nothing");
 
   const fromBook = normalizePositions([{ ...POSITION, maker: "maker-1.testnet" }], "vault.testnet");
   const toPerson = planAction(
@@ -203,6 +277,17 @@ test("a sell against the pool closes into the vault; a sell against a person nee
   const noFloor = planAction({ type: "close", strike: 2_400, ticket: 1 }, context({ positions: fromBook }));
   assert.equal(first(noFloor).args.min_unit_premium, null);
   assert.throws(() => planAction({ type: "sell", strike: 2_400 }, context()), /writing a ticket needs a price/);
+
+  // Into the vault the trader cannot name a price either, only refuse one: the
+  // floor travels as `min_exit_units`, 1% under the price the rail showed for the
+  // ticket's three contracts — and a quote that has already fallen under it is
+  // said out loud instead of signed into a reverted close.
+  const floored = planAction({ type: "sell", strike: 2_400, ticket: 1, limit: 0.045 }, context());
+  assert.equal(first(floored).args.min_exit_units, "133650");
+  assert.throws(
+    () => planAction({ type: "sell", strike: 2_400, ticket: 1, limit: 0.06 }, context()),
+    /the exit fell to 0\.0450 · more than 1% under your 0\.0600/,
+  );
 });
 
 test("a sell that names no ticket writes one: into a bid that pays, or resting", () => {
@@ -229,10 +314,16 @@ test("a sell that names no ticket writes one: into a bid that pays, or resting",
   assert.equal(first(wrongSize).method, "post_offer");
 });
 
-test("a sell against the pool still needs a mark to close at", () => {
+test("a sell against the pool needs the venue's price for that ticket's series", () => {
   assert.throws(
-    () => planAction({ type: "sell", strike: 2_400, ticket: 1 }, context({ mid: null })),
-    /no mark to close/,
+    () => planAction({ type: "sell", strike: 2_400, ticket: 1 }, context({ price: null })),
+    /no live price/,
+  );
+  // The cell on screen is not the holder's series: a quote for a different one
+  // would be a mid the contract refuses, so the plan refuses first.
+  assert.throws(
+    () => planAction({ type: "sell", strike: 2_400, ticket: 1 }, context({ price: { ...THREE, seriesId: 9 } })),
+    /no live price/,
   );
 });
 
@@ -369,7 +460,7 @@ test("every planned call has a sentence the trader can read", () => {
   ];
   const words = sentences.map(([call, body]) => describe([call], body as never, context()));
   assert.deepEqual(words, [
-    "bought 3x from the pool at 0.0520",
+    "bought 3x from the pool at 0.0520 all-in",
     "sold 3x back to the pool",
     "bid resting at 0.0400",
     "offer resting at 0.0600",

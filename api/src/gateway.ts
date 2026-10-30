@@ -259,8 +259,45 @@ export function normalizeSeries(seriesId: number, raw: unknown): SeriesInfo | nu
   };
 }
 
-export function normalizePositions(raw: unknown, vaultAccount: string): PositionRow[] {
-  return rows(raw)
+/**
+ * The vault's own price for one series, as `get_pool_prices` answered it. The
+ * integers are what `pool_buy` will charge and `pool_close` will pay, so a
+ * ladder that showed anything else would be quoting a trade the contract does
+ * not make — the engine's float marks the market, this marks the ticket.
+ */
+export interface PoolPrice {
+  seriesId: number;
+  midUnits: string;
+  entryUnits: string;
+  exitUnits: string;
+  stampNs: number;
+  ageNs: number;
+}
+
+/** `get_pool_prices` answers with the series it can price and drops the rest,
+ * so a missing key is the venue saying it has no live quote here. A row whose
+ * mid is zero is read the same way: it is not a price of 0.00, it is no price,
+ * and trading on it would be trading on nothing. */
+export function normalizePrices(raw: unknown): Map<number, PoolPrice> {
+  const out = new Map<number, PoolPrice>();
+  for (const entry of rows(raw)) {
+    const seriesId = Number(entry.series_id);
+    const midUnits = amount(entry.mid_units);
+    const entryUnits = amount(entry.entry_units);
+    if (!Number.isInteger(seriesId) || midUnits <= 0n || entryUnits <= 0n) continue;
+    out.set(seriesId, {
+      seriesId,
+      midUnits: midUnits.toString(),
+      entryUnits: entryUnits.toString(),
+      exitUnits: amount(entry.exit_units).toString(),
+      stampNs: Number(entry.stamp_ns ?? 0),
+      ageNs: Number(entry.age_ns ?? 0),
+    });
+  }
+  return out;
+}
+
+export function normalizePositions(raw: unknown, vaultAccount: string): PositionRow[] {  return rows(raw)
     .filter((entry) => entry.side === "long" || entry.side === "short")
     .map((entry) => {
       const low = fromUnits(amount(entry.low_strike));
@@ -293,9 +330,10 @@ export function normalizePositions(raw: unknown, vaultAccount: string): Position
 // ---------- the ladder ----------
 
 /**
- * What the engine says a series is worth. `poolAsk` and `poolBid` are the vault's
- * loaded and haircut quotes — the engine derives them from the on-chain margin,
- * because deriving them here would put pricing in TypeScript.
+ * What the engine says a series is worth. These are model numbers: the mark, and
+ * the spread the engine would show a maker. The vault's own two-sided price is
+ * not here — it comes from `PoolPrice`, because the contract is what decides
+ * whether a trade happens and at what integer.
  */
 export interface MarkSide {
   mark: number;
@@ -308,8 +346,6 @@ export interface MarkSide {
   gamma: number;
   vega: number;
   theta: number;
-  poolAsk: number | null;
-  poolBid: number | null;
   /** The two legs, so the payoff diagram never has to invent a width. */
   low: number;
   high: number;
@@ -336,6 +372,11 @@ export interface LadderSide {
   bestOfferId: number | null;
   poolAsk: number | null;
   poolBid: number | null;
+  /** How old the venue's standing quote was when the contract answered, in
+   * seconds. The vault trades at the price it published, so on a moving index
+   * that price is a moment old by the time a click lands — the screen says how
+   * long a moment rather than letting the trader find it in the fill. */
+  poolQuoteAgeS: number | null;
   /** The ask a taker would actually pay, and who would take it: the book if it
    * beats the vault, the vault otherwise. A comparison, not a calculation. */
   takeAsk: number | null;
@@ -352,13 +393,20 @@ export interface LadderRow {
   call: LadderSide | null;
 }
 
-/** One cell: the engine's marks with the chain's resting liquidity overlaid. */
+/**
+ * One cell: the engine's marks, the chain's resting liquidity, and the vault's
+ * own published price for it.
+ *
+ * `pool` is `get_pool_prices` for this series, or null when the venue has no
+ * live quote — and then the vault is simply not a counterparty here.
+ */
 export function mergeSide(
   mark: MarkSide | null,
   book: BookLevel[],
   bids: BidLevel[],
   seriesId: number | null,
   settlement: Settlement,
+  pool: PoolPrice | null = null,
 ): LadderSide | null {
   if (!mark && book.length === 0 && bids.length === 0) return null;
   const bestOffer = book[0] ?? null;
@@ -376,20 +424,28 @@ export function mergeSide(
     gamma: 0,
     vega: 0,
     theta: 0,
-    poolAsk: null,
-    poolBid: null,
     low: 0,
     high: 0,
   };
-  // A resting quote on-chain beats the model's spread: it is a price someone
-  // actually committed collateral to.
-  const ask = bestOffer ? bestOffer.unitPremium : base.ask;
+  // The vault's two-sided price is the contract's own integers when it has a
+  // live quote, and nothing at all when it has not. An engine mark is not a
+  // tradeable price any more: `pool_buy` answers only to the mid the venue
+  // published, so a cell whose quote is missing or expired is a cell the vault
+  // is not selling — which the screen has to say rather than round off to zero.
+  const poolAsk = pool ? fromUnits(amount(pool.entryUnits)) : null;
+  const poolBid = pool ? fromUnits(amount(pool.exitUnits)) : null;
+  // What a buyer is charged: a person's offer if one is resting, otherwise the
+  // vault's published price. The model's spread is only a chart line, and a
+  // ladder that shows it as the ask shows a number the click will not fill at —
+  // between two polls the index moves and the trader reads that as a broken venue.
+  const ask = bestOffer ? bestOffer.unitPremium : (poolAsk ?? base.ask);
+  // The bid stays the book's or the model's: the vault pays its exit to a holder
+  // closing a ticket, which is not a bid a seller can write into. The rail shows
+  // that number where it belongs, beside the button that uses it.
   const bid = bestBid ? bestBid.unitPremium : base.bid;
   const candidates: Array<{ price: number; from: "book" | "pool" }> = [];
   if (bestOffer) candidates.push({ price: bestOffer.unitPremium, from: "book" });
-  if (base.poolAsk !== null && base.poolAsk !== undefined) {
-    candidates.push({ price: base.poolAsk, from: "pool" });
-  }
+  if (poolAsk !== null) candidates.push({ price: poolAsk, from: "pool" });
   const takeAsk = candidates.length
     ? candidates.reduce((cheapest, next) => (next.price < cheapest.price ? next : cheapest))
     : null;
@@ -410,8 +466,9 @@ export function mergeSide(
     askCount: book.length,
     bestBidId: bestBid ? bestBid.bidId : null,
     bestOfferId: bestOffer ? bestOffer.offerId : null,
-    poolAsk: base.poolAsk ?? null,
-    poolBid: base.poolBid ?? null,
+    poolAsk,
+    poolBid,
+    poolQuoteAgeS: pool ? pool.ageNs / 1e9 : null,
     takeAsk: takeAsk ? takeAsk.price : null,
     takeAskFrom: takeAsk ? takeAsk.from : null,
     seriesId,
@@ -428,6 +485,9 @@ export function buildLadder(input: {
   books: Partial<Record<number, BookLevel[]>>;
   bids: Partial<Record<number, BidLevel[]>>;
   series: Partial<Record<number, SeriesInfo | null>>;
+  /** The vault's published price per series, from `get_pool_prices`. A series
+   * that is not in here has no live quote, and the vault is not its maker. */
+  prices: Partial<Record<number, PoolPrice>>;
   idFor: (kind: Kind, strike: number) => number | null;
 }): LadderRow[] {
   const sideOf = (kind: Kind, strike: number): LadderSide | null => {
@@ -439,6 +499,7 @@ export function buildLadder(input: {
       seriesId === null ? [] : (input.bids[seriesId] ?? []),
       seriesId,
       info?.settlement ?? "open",
+      seriesId === null ? null : (input.prices[seriesId] ?? null),
     );
   };
   return input.strikes.map((strike) => ({
@@ -506,9 +567,9 @@ export interface PortfolioRow {
   contracts: number;
   cost: number;
   mark: number | null;
-  /** What closing one contract pays today, after the vault's exit haircut. */
+  /** What closing one contract pays now: the vault's exit for its own ticket, the best bid for a person's. */
   exitUnit: number | null;
-  /** Mark minus cost, over the whole position. Null when nothing marks it. */
+  /** What a close pays now, minus cost, over the whole position. Null when nothing prices it. */
   open: number | null;
   expiry: string;
   /** `asset|expiry|kind|strike`, the address the close button posts back. */
@@ -533,19 +594,29 @@ export interface PortfolioView {
 }
 
 /**
- * The position table. A mark is required to show a PnL at all: without one the
- * row states the facts (cost, worst case) and leaves the number blank rather
- * than inventing a zero the trader would read as a flat position.
+ * The position table. A realisable price is required to show a PnL at all:
+ * without one the row states the facts (cost, worst case) and leaves the number
+ * blank rather than inventing a zero the trader would read as a flat position.
  */
 export function buildPortfolio(
   positions: PositionRow[],
-  marks: Partial<Record<number, { mark: number; exitValue: number | null }>>,
+  marks: Partial<Record<number, { mark: number; exitValue: number | null; bid: number | null }>>,
   nowMs = Date.now(),
 ): PortfolioView {
   const rows = positions.map((position) => {
     const quote = marks[position.seriesId];
     const live = position.side === "long" && position.settlement === "open";
     const mark = live && quote ? quote.mark : null;
+    // What a close pays, per contract, out of the chain's own numbers: the vault
+    // buys its own ticket back at the exit of the mid it published, and a ticket
+    // a person made is worth the best resting bid. Marking either with the
+    // model's mid showed +$0.0168 unrealised on a ticket the next click sold
+    // back for −$0.0081, and a button naming a price nobody has to pay.
+    const exitUnit = !live
+      ? null
+      : position.againstPool
+        ? (quote?.exitValue ?? null)
+        : (quote?.bid ?? null);
     const expiry = expiryLabel(position.expiryNs, nowMs);
     const closeBlock =
       position.side !== "long"
@@ -554,7 +625,17 @@ export function buildPortfolio(
           ? `series ${position.settlement}`
           : mark === null
             ? "no mark yet"
-            : null;
+            : // A vault ticket is only sellable while the venue is quoting it:
+              // `pool_close` answers to the published mid, so offering the button
+              // without one is offering a reverted transaction. A person's ticket
+              // needs a bidder for the same reason.
+              position.againstPool
+              ? exitUnit === null || exitUnit === 0
+                ? "the venue has no price to buy it back at"
+                : null
+              : exitUnit === null
+                ? "no bidder has priced this ticket"
+                : null;
     return {
       ticketId: position.ticketId,
       series: position.series,
@@ -562,11 +643,11 @@ export function buildPortfolio(
       contracts: position.contracts,
       cost: position.cost,
       mark,
-      exitUnit: live && quote ? quote.exitValue : null,
-      // The mark is one contract's price and the cost is the whole ticket's, so
+      exitUnit,
+      // The unit price is one contract's and the cost is the whole ticket's, so
       // the subtraction has to be made at the ticket's size. Mixing them was a
       // −$90 "open" on a −$5 position.
-      open: mark === null ? null : mark * position.contracts - position.cost,
+      open: exitUnit === null ? null : exitUnit * position.contracts - position.cost,
       expiry,
       seriesKey: `${position.asset}|${expiry}|${position.kind}|${seriesStrike(position)}`,
       maxPayout: position.maxPayout,
@@ -969,11 +1050,6 @@ export function marksFromEngine(rows: Array<{ strike: number; put: LadderSide | 
       gamma: side.gamma,
       vega: side.vega,
       theta: side.theta,
-      // The engine's maker price for this cell, null when it is not quoting
-      // one. Not `ask`: that is the display number and reads 0 when there is
-      // nothing to show.
-      poolAsk: side.poolAsk ?? null,
-      poolBid: side.poolBid ?? null,
       low: side.low,
       high: side.high,
     };
@@ -981,4 +1057,30 @@ export function marksFromEngine(rows: Array<{ strike: number; put: LadderSide | 
   // Keyed by cell, never by series id: the engine's ladder knows strikes, the
   // chain's registry knows ids, and the two are only joined in `contextFor`.
   return { side: (_asset, kind, strike) => cell(kind, strike) };
+}
+
+/**
+ * Who is allowed to ask this gateway to sign.
+ *
+ * The gateway holds a key and trades as one account, so anything that reaches
+ * the port can spend it. That is fine for a loopback tool and not fine for a
+ * browser: a page on another origin can post to `http://127.0.0.1:<port>` from
+ * the visitor's own machine, and a domain with a short TTL can rebind to it. A
+ * scripted client sends no `Origin` and is judged on `Host` alone; a browser
+ * has to show it came from the page this venue serves.
+ */
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+function hostOf(value: string): string {
+  return value.replace(/:\d+$/, "");
+}
+
+export function rejectSigning(headers: { host?: string; origin?: string }): string | null {
+  const host = hostOf(headers.host ?? "");
+  if (!LOOPBACK.has(host)) {
+    return headers.host ? `this venue answers only on loopback, not ${headers.host}` : "a request to sign must name its host";
+  }
+  if (headers.origin === undefined) return null;
+  const from = hostOf(headers.origin.replace(/^https?:\/\//, "").replace(/\/.*$/, ""));
+  return from === host ? null : `origin ${headers.origin} is not this venue`;
 }

@@ -88,6 +88,20 @@ function fakeViews(over: Partial<Views> = {}): Views & { calls: string[] } {
           ]
         : [];
     },
+    async getPoolPrices(seriesIds, quantityUnits) {
+      track(`getPoolPrices:${seriesIds.join("-")}:${quantityUnits}`);
+      // The vault prices every listed series at a 0.0500 mid: 0.0520 loaded in,
+      // 0.0400 haircut out, in one-contract integers.
+      return seriesIds.map((seriesId) => ({
+        series_id: seriesId,
+        quantity: quantityUnits,
+        mid_units: "50000",
+        entry_units: "52000",
+        exit_units: "40000",
+        stamp_ns: EXPIRY_NS,
+        age_ns: 1_000_000_000,
+      }));
+    },
     async getPoolState() {
       track("getPoolState");
       return {
@@ -189,8 +203,6 @@ function fakeMarks(missing: string[] = []) {
         gamma: 0.002,
         vega: 0.4,
         theta: -0.01,
-        poolAsk: 0.052,
-        poolBid: 0.04,
         low: strike,
         high: strike + 100,
       };
@@ -249,7 +261,7 @@ test("the chain alone decides which strikes the ladder can trade", async () => {
   assert.equal(at2400.call?.markIv, 0.45);
   assert.equal(at2400.call?.takeAskFrom, "book");
   assert.equal(at2400.put?.seriesId, 3, "the 2.3k/2.4k put is the same cell");
-  assert.equal(at2400.put?.ask, 0.055, "with nothing resting on it, the model's spread stands");
+  assert.equal(at2400.put?.ask, 0.052, "with nothing resting on it, the ask is the vault's own price");
   assert.equal(at2400.put?.takeAskFrom, "pool");
 
   const at2450 = state.chain[1];
@@ -288,6 +300,28 @@ test("the chain alone decides which strikes the ladder can trade", async () => {
   assert.equal(state.positions.totals.closable, 1, "and the rail says it can be closed");
 });
 
+test("a series the venue has not quoted has no vault side to take", async () => {
+  const state = await gatherState({
+    asset: "ETH",
+    expiry: DAY,
+    strikes: [2_400, 2_450],
+    account: "you.testnet",
+    vault: "vault.testnet",
+    views: fakeViews({ getPoolPrices: async () => [] }),
+    marks: fakeMarks(),
+    spot: 2_350,
+  });
+  const at2400 = state.chain[0];
+  assert.equal(at2400.call?.poolAsk, null, "the engine's mark is not a price the vault will trade at");
+  assert.equal(at2400.call?.poolBid, null);
+  assert.equal(at2400.call?.takeAsk, 0.05, "a resting offer is still a counterparty");
+  assert.equal(at2400.call?.takeAskFrom, "book");
+  assert.equal(at2400.put?.takeAsk, null, "with nobody resting either there is nothing to buy");
+  assert.equal(at2400.put?.ask, 0.055, "and the model's spread still reads as a mark, not as a fill");
+  assert.equal(state.positions.rows[0].exitUnit, null, "a ticket with no quote has no exit price to show");
+  assert.equal(state.positions.totals.closable, 0, "the rail will not offer a close the contract would refuse");
+});
+
 test("a cell the engine cannot price still shows the chain", async () => {
   const state = await gatherState({
     asset: "ETH",
@@ -324,6 +358,12 @@ test("only the series for this expiry are read from the chain", async () => {
   assert.ok(!views.calls.includes("getBook:5"), "but a series from another day is not quoted");
   assert.ok(!views.calls.includes("getBook:6"));
   assert.ok(views.calls.includes("getBook:2"));
+  // The vault's prices come in one batch, for the series on this ladder only, at
+  // the one-contract size the screen shows. Series 5 is next week's and 6 does
+  // not parse; neither belongs in the read.
+  const priced = views.calls.find((name) => name.startsWith("getPoolPrices:"));
+  assert.equal(priced, "getPoolPrices:2-3-4:1000000");
+  assert.equal(views.calls.filter((name) => name.startsWith("getPoolPrices")).length, 1, "one read, not one per cell");
   assert.equal(views.calls.filter((name) => name === "expectedCustody").length, 1);
 });
 

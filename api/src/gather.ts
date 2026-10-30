@@ -13,9 +13,11 @@ import {
   type Kind,
   type LadderRow,
   type MarkSide,
+  type PoolPrice,
   type PoolView,
   type PositionRow,
   type SeriesInfo,
+  SCALE,
   Tape,
   amount,
   buildCustody,
@@ -28,6 +30,7 @@ import {
   normalizeBids,
   normalizeBook,
   normalizePool,
+  normalizePrices,
   normalizePositions,
   normalizeSeries,
   seriesDetail,
@@ -45,6 +48,9 @@ export interface Views {
   getBook(seriesId: number, limit: number): Promise<unknown>;
   getBids(seriesId: number, limit: number): Promise<unknown>;
   getPoolState(): Promise<unknown>;
+  /** The vault's published prices, for up to 64 series at a time. A series the
+   * venue has not quoted — or has quoted too long ago — is simply absent. */
+  getPoolPrices(seriesIds: number[], quantityUnits: string): Promise<unknown>;
   getPositions(account: string): Promise<unknown>;
   getBalance(account: string): Promise<string | number | bigint>;
   getLpShares(account: string): Promise<string | number | bigint>;
@@ -88,6 +94,11 @@ export interface Registry {
  * The day was enough while a venue listed one batch a day; an hourly engine puts
  * two grids on the same day, and a cell that resolves to whichever series the
  * read happened to see last is a price nobody quoted.
+ *
+ * A stamp matches within a millisecond, not to the digit: the contract's
+ * nanoseconds cross a JSON float on the way in and lose up to 256 of them, and
+ * an exact string comparison would then find no series at all. An hour separates
+ * two batches, so a millisecond is nothing but slack.
  */
 export function registryForExpiry(
   pairs: Array<[number, unknown]>,
@@ -98,12 +109,33 @@ export function registryForExpiry(
   const byCell = new Map<string, number>();
   const list: SeriesInfo[] = [];
   const exact = /^\d+$/.test(expiry);
+  const stamp = exact ? Number(expiry) : 0;
+  const all: SeriesInfo[] = [];
   for (const [seriesId, raw] of pairs) {
     const info = normalizeSeries(seriesId, raw);
-    if (!info || info.asset !== asset) continue;
-    if (exact ? String(BigInt(info.expiryNs)) !== expiry : expiryDate(info.expiryNs) !== expiry) continue;
-    byId.set(seriesId, info);
-    byCell.set(`${info.kind}|${seriesStrike(info)}`, seriesId);
+    if (info && info.asset === asset) all.push(info);
+  }
+  const matching = (wanted: number | string) =>
+    all.filter((info) =>
+      typeof wanted === "number" ? Math.abs(info.expiryNs - wanted) <= 1e6 : expiryDate(info.expiryNs) === wanted,
+    );
+  let chosen = matching(exact ? stamp : expiry);
+  if (chosen.length === 0 && all.length > 0) {
+    // The engine names the ladder it is marking and the operator lists that
+    // expiry a tick later, so for a minute the chain holds no series with the
+    // stamp the screen was given. An empty grid is the wrong answer to that:
+    // the nearest expiry the chain does hold is the market the trader can
+    // actually trade, and it is what the ladder shows until the listing lands.
+    const open = all.filter((info) => info.settlement === "open");
+    const candidates = open.length > 0 ? open : all;
+    const nearest = candidates.reduce((best, info) =>
+      Math.abs(info.expiryNs - stamp) < Math.abs(best.expiryNs - stamp) ? info : best,
+    );
+    chosen = matching(nearest.expiryNs);
+  }
+  for (const info of chosen) {
+    byId.set(info.seriesId, info);
+    byCell.set(`${info.kind}|${seriesStrike(info)}`, info.seriesId);
     list.push(info);
   }
   return {
@@ -112,9 +144,7 @@ export function registryForExpiry(
     info: (seriesId) => byId.get(seriesId) ?? null,
     all: () => list,
     list,
-    expiries: pairs
-      .map(([seriesId, raw]) => normalizeSeries(seriesId, raw))
-      .filter((info): info is SeriesInfo => info !== null && info.asset === asset),
+    expiries: all,
   };
 }
 
@@ -170,15 +200,6 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
     }
   }
 
-  const chain: LadderRow[] = buildLadder({
-    strikes: input.strikes,
-    marks: marksByCell,
-    books,
-    bids,
-    series: Object.fromEntries(registry.list.map((info) => [info.seriesId, info])),
-    idFor: (kind, strike) => registry.idFor(input.asset, kind, strike),
-  });
-
   const pool: PoolView = normalizePool(await input.views.getPoolState());
   const holders = [...new Set([input.account, ...(input.holders ?? [])])];
   const byHolder = new Map<string, PositionRow[]>();
@@ -187,14 +208,68 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
   const observed: Array<{ who: string; position: PositionRow }> = [];
   for (const [who, rows] of byHolder) for (const position of rows) observed.push({ who, position });
   input.tape?.observe(observed, input.spot);
-  // A ticket is marked from its own cell, not from the expiry the screen happens
-  // to be looking at: the position rail has to value everything a holder owns,
-  // including a batch they are not viewing.
-  const marksBySeries: Record<number, { mark: number; exitValue: number | null }> = {};
+
+  // The vault's prices, in the integers it charges, for one contract. Read in the
+  // batches the contract allows rather than one call per cell: a ladder is forty
+  // cells and forty reads would be forty chances to disagree about one block.
+  //
+  // Held tickets are in the same read even when their series is not on screen —
+  // the rail has to say what a position can actually be sold back for, and that
+  // is the venue's quote for its series, whatever expiry it belongs to.
+  const toPrice = [
+    ...new Set([
+      ...registry.list.filter((info) => info.settlement === "open").map((info) => info.seriesId),
+      ...[...byHolder.values()]
+        .flat()
+        .filter((position) => position.side === "long" && position.settlement === "open")
+        .map((position) => position.seriesId),
+    ]),
+  ];
+  const prices: Record<number, PoolPrice> = {};
+  for (let start = 0; start < toPrice.length; start += 64) {
+    const batch = toPrice.slice(start, start + 64);
+    const raw = await input.views.getPoolPrices(batch, SCALE.toString());
+    for (const [seriesId, price] of normalizePrices(raw)) prices[seriesId] = price;
+  }
+
+  const chain: LadderRow[] = buildLadder({
+    strikes: input.strikes,
+    marks: marksByCell,
+    books,
+    bids,
+    series: Object.fromEntries(registry.list.map((info) => [info.seriesId, info])),
+    prices,
+    idFor: (kind, strike) => registry.idFor(input.asset, kind, strike),
+  });
+
+  // A person's ticket can sit on an expiry the screen is not showing, so its
+  // bidders are read for the held series as well as the listed ones.
   for (const rows of byHolder.values()) {
     for (const position of rows) {
-      const side = marksByCell[`${position.kind}|${seriesStrike(position)}`];
-      if (side) marksBySeries[position.seriesId] = { mark: side.mark, exitValue: side.poolBid };
+      if (position.againstPool || position.side !== "long" || position.settlement !== "open") continue;
+      if (bids[position.seriesId] === undefined) {
+        bids[position.seriesId] = normalizeBids(await input.views.getBids(position.seriesId, 50));
+      }
+    }
+  }
+
+  // A ticket is marked from its own cell, not from the expiry the screen happens
+  // to be looking at. What a holder can actually take is a chain number, not the
+  // model's: the vault pays its own published exit for a ticket it made, and a
+  // ticket a person made is worth the best resting bid. The model's haircut is a
+  // number the contract has never agreed to, and offering it would be a close
+  // that reverts — or a button that names a price nobody will pay.
+  const marksBySeries: Record<number, { mark: number; exitValue: number | null; bid: number | null }> = {};
+  for (const rows of byHolder.values()) {
+    for (const position of rows) {
+      const model = marksByCell[`${position.kind}|${seriesStrike(position)}`];
+      if (!model) continue;
+      const quoted = prices[position.seriesId];
+      marksBySeries[position.seriesId] = {
+        mark: model.mark,
+        exitValue: quoted === undefined ? null : fromUnits(amount(quoted.exitUnits)),
+        bid: (bids[position.seriesId] ?? [])[0]?.unitPremium ?? null,
+      };
     }
   }
 

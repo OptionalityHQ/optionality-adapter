@@ -12,8 +12,11 @@ import {
   type Asset,
   type Kind,
   type LadderSide,
+  type PoolPrice,
   type PositionRow,
   type Settlement,
+  SCALE,
+  amount,
   legsFor,
   toUnits,
 } from "./gateway.ts";
@@ -37,8 +40,13 @@ export interface Context {
   seriesFor: (asset: Asset, kind: Kind, strike: number) => ResolvedSeries | null;
   /** The ladder cell the trader is looking at, already merged with the chain. */
   side: LadderSide | null;
-  /** The engine's mark per contract, in tokens. */
-  mid: number | null;
+  /**
+   * The vault's published price for this cell at the clicked quantity, read off
+   * the contract. This is the only number a pool trade may carry: `pool_buy` and
+   * `pool_close` refuse a mid that is not the venue's own, so a planner working
+   * from the engine's float would plan a trade the chain will not make.
+   */
+  price: PoolPrice | null;
   positions: PositionRow[];
 }
 
@@ -102,16 +110,42 @@ function requireOpen(series: ResolvedSeries): void {
 
 /**
  * A market buy: take the book if a resting offer is cheaper than the vault,
- * otherwise buy from the vault at its loaded price. `limit` is the price the
- * trader agreed to, and it becomes the slippage budget — never the fill price.
+ * otherwise buy from the vault at its loaded price. The buyer names a price only
+ * as a bound — the vault prices itself (`pool_buy` has no price argument), so
+ * what this decides is how much movement to accept between the screen and the
+ * chain, and when to say the click was never an agreement to this trade.
  */
+const MARKET_SLIPPAGE_BPS = 100n;
+
+/** The budget to sign for an order paying `ask` in total, given a trader who saw
+ * `limit` per contract. Inside the tolerance the order takes the venue's price;
+ * outside it there is no fill to plan. */
+function marketBudget(limit: number, contracts: number, ask: bigint): bigint {
+  const shown = toUnits(limit * contracts);
+  if (ask <= shown) return shown;
+  const ceiling = (shown * (10_000n + MARKET_SLIPPAGE_BPS)) / 10_000n;
+  if (ask > ceiling) {
+    throw new Error(
+      `the ask moved to ${(Number(ask) / Number(SCALE) / contracts).toFixed(4)} · ` +
+        `more than 1% past your ${limit.toFixed(4)}`,
+    );
+  }
+  return ask;
+}
+
+/** The same, on the way out: a seller's floor, 1% under what the screen showed.
+ * The vault pays its own exit, and the floor is the trader's refusal right. */
+function marketFloor(limit: number, contracts: number): bigint {
+  const shown = toUnits(limit * contracts);
+  return (shown * (10_000n - MARKET_SLIPPAGE_BPS)) / 10_000n;
+}
+
 function planBuy(context: Context, body: ActionBody): Call[] {
   const series = requireSeries(context, body);
   requireOpen(series);
   const contracts = contractsOf(body.quantity);
   const limit = Number(body.limit);
   if (!Number.isFinite(limit) || limit <= 0) throw new Error("a buy needs a limit price");
-  const budget = toUnits(limit * contracts);
   if (body.postOnly) {
     const resting = context.side?.takeAsk;
     if (resting !== null && resting !== undefined && limit >= resting) {
@@ -131,18 +165,15 @@ function planBuy(context: Context, body: ActionBody): Call[] {
       },
     ];
   }
-  // The page priced its limit from a read one poll old, and only the vault may
-  // write this one. Signing anyway sends a budget the contract will call too
-  // small, and "premium above the budget" is a bad way to tell someone the
-  // market moved — or that there was never a price to take.
-  const now = context.side?.takeAsk;
-  if (now === null || now === undefined) {
-    throw new Error("nothing is offering this spread: the vault will not write it and no one is resting one");
+  // Two things can sell this spread: a person resting an offer on chain, and the
+  // vault at the price the venue published. `takeAsk` is the cheaper of the two,
+  // and null only when neither has one — so a null is not a cheap fill, it is no
+  // market, and signing anyway would only buy a reverted transaction.
+  const take = context.side?.takeAsk ?? null;
+  if (take === null) {
+    throw new Error("nothing is offering this spread: the venue has no live price and no one is resting one");
   }
-  if (limit < now) {
-    throw new Error(`the ask moved to ${now.toFixed(4)} · your limit was ${limit.toFixed(4)}`);
-  }
-  if (context.side?.takeAskFrom === "book" && context.side.bestOfferId !== null) {
+  if (context.side?.takeAskFrom === "book" && context.side?.bestOfferId !== null) {
     return [
       {
         contract: "options",
@@ -150,15 +181,21 @@ function planBuy(context: Context, body: ActionBody): Call[] {
         args: {
           series_id: series.seriesId,
           quantity: toUnits(contracts).toString(),
-          max_total_premium: budget.toString(),
+          max_total_premium: marketBudget(limit, contracts, toUnits(take * contracts)).toString(),
           min_quantity: null,
         },
         tgas: TGAS,
       },
     ];
   }
-  if (context.mid === null || context.mid === undefined) {
-    throw new Error("no mark to price this series from");
+  // The vault's half. It prices itself — there is no price argument to send —
+  // and the budget is the total the contract charges for this quantity, read
+  // from `get_pool_prices`: its premium is one ceiling over the whole ticket, so
+  // a per-contract multiplication would be a different number from the one
+  // execution uses.
+  const price = context.price;
+  if (price === null) {
+    throw new Error("the vault is not writing this spread: the venue has no live price for it");
   }
   return [
     {
@@ -167,8 +204,7 @@ function planBuy(context: Context, body: ActionBody): Call[] {
       args: {
         series_id: series.seriesId,
         quantity: toUnits(contracts).toString(),
-        mid_units: toUnits(context.mid).toString(),
-        max_total_premium: budget.toString(),
+        max_total_premium: marketBudget(limit, contracts, amount(price.entryUnits)).toString(),
       },
       tgas: TGAS,
     },
@@ -213,14 +249,30 @@ function planSell(context: Context, body: ActionBody): Call[] {
       (row) => row.ticketId === ticket && row.side === "long" && row.againstPool,
     );
     if (held) {
-      if (context.mid === null || context.mid === undefined) {
-        throw new Error("no mark to close this ticket against");
+      // The vault buys the ticket back at its own quote — there is no price to
+      // send, and a cell that happens to be on screen is not the holder's
+      // series, so the quote has to be that series' before anything is planned.
+      const price = context.price;
+      if (price === null || price.seriesId !== held.seriesId) {
+        throw new Error("the venue has no live price for this series: the vault cannot buy the ticket back");
+      }
+      const exit = amount(price.exitUnits);
+      // Someone who clicked "Close @ 0.0822" agreed to about that, not to
+      // whatever the index does before the transaction lands. The floor is 1%
+      // under the price shown; a quote already under it is refused here, in
+      // words the holder can act on, rather than as a reverted close.
+      const floor = limit > 0 ? marketFloor(limit, held.contracts) : null;
+      if (floor !== null && exit < floor) {
+        throw new Error(
+          `the exit fell to ${(Number(exit) / Number(SCALE) / held.contracts).toFixed(4)} · ` +
+            `more than 1% under your ${limit.toFixed(4)}`,
+        );
       }
       return [
         {
           contract: "options",
           method: "pool_close",
-          args: { ticket_id: ticket, mid_units: toUnits(context.mid).toString() },
+          args: { ticket_id: ticket, min_exit_units: floor === null ? null : floor.toString() },
           tgas: TGAS,
         },
       ];
@@ -374,8 +426,12 @@ export function describe(calls: Call[], body: ActionBody, context: Context): str
   const call = calls[0];
   const contracts = Number(body.quantity ?? 1);
   switch (call?.method) {
-    case "pool_buy":
-      return `bought ${contracts}x from the pool at ${Number(context.side?.takeAsk ?? 0).toFixed(4)}`;
+    case "pool_buy": {
+      // The contract's own total for the quantity, not the screen's older mark:
+      // this is the number that left the trader's balance.
+      const entry = context.price ? Number(amount(context.price.entryUnits)) / Number(SCALE) : 0;
+      return `bought ${contracts}x from the pool at ${(entry / contracts).toFixed(4)} all-in`;
+    }
     case "fill_market_order":
       return `took ${contracts}x off the book`;
     case "pool_close":

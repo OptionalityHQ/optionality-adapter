@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   type PositionRow,
+  type PoolPrice,
   amount,
   buildCustody,
   buildLadder,
@@ -17,8 +18,10 @@ import {
   normalizeBook,
   normalizePool,
   normalizePositions,
+  normalizePrices,
   marksFromEngine,
   normalizeSeries,
+  rejectSigning,
   seriesDetail,
   settlementOf,
   seriesKey,
@@ -47,6 +50,28 @@ const BID_ROW = {
   premium: "120000",
   unit_premium: "40000",
   expires_ns: 1_793_272_000_000_000_000,
+};
+
+/** One `get_pool_prices` row: the vault's mid and the integers it trades on, in
+ * the SDK's dialect — `U128` wrappers as strings, the stamps as numbers. */
+const PRICE_JSON = {
+  series_id: 2,
+  quantity: "1000000",
+  mid_units: "50000",
+  entry_units: "52000",
+  exit_units: "45000",
+  stamp_ns: 1_793_272_900_000_000_000,
+  age_ns: 1_200_000_000,
+};
+
+/** The same price, projected, for the merges that need a vault side. */
+const QUOTE: PoolPrice = {
+  seriesId: 2,
+  midUnits: "50000",
+  entryUnits: "52000",
+  exitUnits: "45000",
+  stampNs: 1_793_272_900_000_000_000,
+  ageNs: 1_200_000_000,
 };
 
 const POOL_JSON = {
@@ -244,10 +269,13 @@ test("a resting quote beats the model, and the vault is still a candidate", () =
     bidIv: 0.44,
     askIv: 0.46,
     delta: 0.1,
-    poolAsk: 0.052,
-    poolBid: 0.04,
+    low: 2_400,
+    high: 2_500,
   };
-  const merged = mergeSide(mark, normalizeBook([BOOK_ROW]), normalizeBids([BID_ROW]), 2, "open");
+  // The vault's price for one contract: 0.0520 loaded, 0.0450 haircut. It comes
+  // from `get_pool_prices`, not from the model — which is the point: the engine
+  // marks the market and only the contract prices a ticket.
+  const merged = mergeSide(mark, normalizeBook([BOOK_ROW]), normalizeBids([BID_ROW]), 2, "open", QUOTE);
   assert.equal(merged?.ask, 0.05, "the book's 0.05 is a price with collateral behind it");
   assert.equal(merged?.bid, 0.04);
   assert.equal(merged?.askSize, 3);
@@ -257,14 +285,27 @@ test("a resting quote beats the model, and the vault is still a candidate", () =
   assert.equal(merged?.bestBidId, 4);
   assert.equal(merged?.mark, 0.05, "the mark is still the model's");
   assert.equal(merged?.markIv, 0.45);
+  assert.equal(merged?.poolAsk, 0.052);
+  assert.equal(merged?.poolBid, 0.045);
+  assert.equal(merged?.poolQuoteAgeS, 1.2, "how old the venue's standing price is, in seconds");
   assert.equal(merged?.takeAsk, 0.05);
   assert.equal(merged?.takeAskFrom, "book");
 
-  const thinner = mergeSide(mark, [], [], 2, "open");
-  assert.equal(thinner?.ask, 0.055, "with nobody resting, the model's spread stands");
+  const thinner = mergeSide(mark, [], [], 2, "open", QUOTE);
+  assert.equal(thinner?.ask, 0.052, "with nobody resting, the ask is what the vault charges, not its model's spread");
+  assert.equal(thinner?.bid, 0.045, "the bid stays the model's: the vault does not buy writes");
   assert.equal(thinner?.takeAskFrom, "pool", "the vault is the only maker left");
   assert.equal(thinner?.takeAsk, 0.052);
   assert.equal(thinner?.bidCount, 0);
+
+  // No quote published is not a quote of zero: the cell has no vault side at
+  // all, and a planner reading it finds nothing to agree to.
+  const unquoted = mergeSide(mark, [], [], 2, "open", null);
+  assert.equal(unquoted?.poolAsk, null);
+  assert.equal(unquoted?.poolBid, null);
+  assert.equal(unquoted?.poolQuoteAgeS, null);
+  assert.equal(unquoted?.takeAsk, null, "a mark is not a price anyone can take");
+  assert.equal(unquoted?.ask, 0.055, "and only then does the model's spread stand as the display");
 
   const bookOnly = mergeSide(null, normalizeBook([BOOK_ROW]), [], 2, "fixed");
   assert.equal(bookOnly?.ask, 0.05);
@@ -283,8 +324,8 @@ test("the ladder is one row per strike with both sides", () => {
       bidIv: null,
       askIv: null,
       delta: 0.1,
-      poolAsk: 0.052,
-      poolBid: 0.04,
+      low: 2_400,
+      high: 2_500,
     },
   };
   const ladder = buildLadder({
@@ -293,6 +334,7 @@ test("the ladder is one row per strike with both sides", () => {
     books: { 2: normalizeBook([BOOK_ROW]) },
     bids: {},
     series: { 2: normalizeSeries(2, SERIES_JSON) },
+    prices: { 2: QUOTE },
     idFor: (kind, strike) => (kind === "Call" && strike === 2_400 ? 2 : null),
   });
   assert.equal(ladder.length, 2);
@@ -301,6 +343,7 @@ test("the ladder is one row per strike with both sides", () => {
   assert.equal(ladder[0].put, null);
   assert.equal(ladder[1].call?.seriesId, 2);
   assert.equal(ladder[1].call?.ask, 0.05);
+  assert.equal(ladder[1].call?.poolAsk, 0.052, "the vault's side is the price the contract charges");
   assert.equal(ladder[1].call?.settlement, "fixed", "the row carries the series' own state");
   assert.equal(ladder[1].put, null);
 });
@@ -328,33 +371,45 @@ test("orders are the whole resting book, best price first", () => {
 
 test("a position is marked only when it can actually be closed", () => {
   const open = normalizePositions([POSITION_JSON], "vault.testnet")[0];
-  const book = buildPortfolio([open], { 2: { mark: 0.08, exitValue: 0.072 } }, Date.UTC(2026, 9, 30, 12));
+  const book = buildPortfolio([open], { 2: { mark: 0.08, exitValue: 0.072, bid: 0.06 } }, Date.UTC(2026, 9, 30, 12));
   const row = book.rows[0];
   assert.equal(row.mark, 0.08);
+  // The vault pays its own exit for a ticket it made, and the unrealised number
+  // is that price minus what it cost — never the mid, which the trader cannot
+  // realise.
   assert.equal(row.exitUnit, 0.072);
-  // 0.08 is one contract's mark and 0.156 is the whole ticket's cost.
-  assert.equal(row.open, 0.08 * 3 - 0.156, "the mark is per contract, the cost is not");
+  assert.equal(row.open, 0.072 * 3 - 0.156, "one contract's price against the whole ticket's cost");
   assert.equal(row.againstPool, true);
   assert.equal(row.closable, true);
   assert.equal(row.closeBlock, null);
   assert.equal(row.seriesKey.split("|")[2], "Call", "the close button addresses the cell, not the id");
 
+  // A ticket a person made is not the vault's to buy back: it is worth whatever
+  // the best bidder is resting, and with nobody resting there is no number.
+  const fromBook = normalizePositions([{ ...POSITION_JSON, maker: "maker-1.testnet" }], "vault.testnet")[0];
+  const priced = buildPortfolio([fromBook], { 2: { mark: 0.08, exitValue: 0.072, bid: 0.05 } }).rows[0];
+  assert.equal(priced.exitUnit, 0.05, "a bidder's price, not the vault's exit");
+  assert.equal(priced.open, 0.05 * 3 - 0.156);
+  const unbid = buildPortfolio([fromBook], { 2: { mark: 0.08, exitValue: 0.072, bid: null } }).rows[0];
+  assert.equal(unbid.open, null);
+  assert.equal(unbid.closeBlock, "no bidder has priced this ticket");
+
   // A settled series has nothing left to close, however live the mark looks.
   const expired = normalizePositions([{ ...POSITION_JSON, settlement: "Void" }], "vault.testnet")[0];
-  const voided = buildPortfolio([expired], { 2: { mark: 0.08, exitValue: null } }).rows[0];
+  const voided = buildPortfolio([expired], { 2: { mark: 0.08, exitValue: null, bid: null } }).rows[0];
   assert.equal(voided.mark, null);
   assert.equal(voided.open, null);
   assert.equal(voided.closeBlock, "series void");
 
   const shortSide = normalizePositions([{ ...POSITION_JSON, side: "short" }], "vault.testnet")[0];
-  assert.equal(buildPortfolio([shortSide], { 2: { mark: 0.08, exitValue: 0.07 } }).rows[0].mark, null);
+  assert.equal(buildPortfolio([shortSide], { 2: { mark: 0.08, exitValue: 0.07, bid: null } }).rows[0].mark, null);
 
   const unmarked = buildPortfolio([open], {}).rows[0];
   assert.equal(unmarked.mark, null, "no mark is not the same as a mark of zero");
   assert.equal(unmarked.cost, 0.156, "the facts still show");
   assert.equal(unmarked.closeBlock, "no mark yet");
 
-  const totals = buildPortfolio([open], { 2: { mark: 0.08, exitValue: 0.072 } }).totals;
+  const totals = buildPortfolio([open], { 2: { mark: 0.08, exitValue: 0.072, bid: 0.06 } }).totals;
   assert.equal(totals.positions, 1);
   assert.equal(totals.closable, 1);
   assert.equal(totals.atRisk, 0.156, "a long spread can only lose what it cost");
@@ -507,8 +562,20 @@ test("the tape records what the chain wrote and what it paid", () => {
   assert.equal(tape.buckets.length, 1, "and it adds nothing to volume");
 });
 
-test("engine marks are addressed by cell, never by series id", () => {
-  const rung = (mark: number): LadderSide => ({
+test("the vault's price list keeps the integers and keys them by series", () => {
+  const prices = normalizePrices([PRICE_JSON, { ...PRICE_JSON, series_id: 3, entry_units: "104000" }]);
+  assert.equal(prices.size, 2);
+  assert.deepEqual(prices.get(2), QUOTE);
+  assert.equal(prices.get(3)?.entryUnits, "104000", "a string amount stays a string, not a rounded float");
+  // A contract that has nothing to say answers with an empty list, and a call
+  // that failed answers with nothing at all. Neither is a price of zero.
+  assert.equal(normalizePrices([]).size, 0);
+  assert.equal(normalizePrices(null).size, 0);
+  assert.equal(normalizePrices([{ series_id: 2 }]).size, 0, "a row with no price is not a price");
+  assert.equal(normalizePrices([PRICE_JSON, PRICE_JSON]).size, 1, "one series, one quote");
+});
+
+test("engine marks are addressed by cell, never by series id", () => {  const rung = (mark: number): LadderSide => ({
     mark,
     bid: mark * 0.9,
     ask: mark * 1.04,
@@ -546,4 +613,34 @@ test("engine marks are addressed by cell, never by series id", () => {
   assert.equal(marks.side("ETH", "Call", 2), null, "this rung has no call");
   assert.equal(marks.side("ETH", "Call", 2_375), null, "an unlisted strike is not a cell");
   assert.deepEqual(Object.keys(marks), ["side"], "no id-keyed lookup exists to misuse");
+});
+
+test("a listing name cannot bring markup into the payload", () => {
+  // The contract refuses these now, and the projection does not depend on it:
+  // the underlying is coerced to one of two assets, so whatever a series was
+  // named with never reaches the page, an explorer or a log line.
+  const hostile = normalizeSeries(7, {
+    underlying: "<img src=x onerror=alert(1)>",
+    kind: "Call",
+    low_strike: 2_400_000_000,
+    high_strike: 2_500_000_000,
+    expiry_ns: 1,
+    settlement: "Open",
+    min_confidence_bps: 3_000,
+  });
+  assert.equal(hostile?.asset, "ETH", "an unknown name is not a second BTC");
+  assert.doesNotMatch(JSON.stringify(hostile), /onerror|<img/, "the name never enters the payload");
+});
+
+test("only this page, on this machine, may ask the gateway to sign", () => {
+  assert.equal(rejectSigning({ host: "127.0.0.1:8790" }), null, "a scripted client names no origin");
+  assert.equal(rejectSigning({ host: "localhost:8790", origin: "http://localhost:8790" }), null);
+  assert.equal(rejectSigning({ host: "127.0.0.1:8790", origin: "http://127.0.0.1:8790" }), null);
+
+  // A page on another site, and a domain that rebound to loopback, both look
+  // exactly like the venue to a socket and nothing like it to a browser.
+  assert.match(String(rejectSigning({ host: "127.0.0.1:8790", origin: "http://evil.example" })), /not this venue/);
+  assert.match(String(rejectSigning({ host: "evil.example:8790", origin: "http://evil.example:8790" })), /loopback/);
+  assert.match(String(rejectSigning({ host: "attacker.example" })), /loopback/);
+  assert.match(String(rejectSigning({})), /must name its host/);
 });

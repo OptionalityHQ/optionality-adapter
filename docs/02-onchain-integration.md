@@ -48,7 +48,8 @@ the product is now. Evidence: `evidence/chain/vault-lifecycle.txt`.
 | Step | Contract call | What the chain said |
 | --- | --- | --- |
 | fund | `withdraw`, then `ft_transfer_call` with `"pool-deposit"` | 1,000,000 out to the LP's wallet, 1,000,000 into the pool, 1,000,000 shares at par |
-| write | `pool_buy` 3 @ 0.05 mid | premium **0.156** all-in, worst case **300**, margin inside it **0.006** · 2.3 Tgas |
+| quote | `set_pool_quote` 0.05 | the venue's price for the series: without it the vault writes nothing at any price |
+| write | `pool_buy` 3 with a 0.16 budget | premium **0.156** all-in, worst case **300**, margin inside it **0.006** · 2.3 Tgas |
 | state | `get_pool_state` | equity 1,000,000.150 · reserved 299.850 · free 999,700.300 · utilisation 0.02% · margin locked 0.006 |
 | greed | `pool_sweep` while the ticket is open | **0.000** — that margin is a void's refund source, not the venue's yet |
 | fix | `report` 2209.00, below the low strike | the call expires worthless |

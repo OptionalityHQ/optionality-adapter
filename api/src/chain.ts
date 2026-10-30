@@ -42,6 +42,38 @@ export interface CallResult {
   value: unknown;
 }
 
+/** NEAR nests a panic several envelopes deep, and near-api-js throws before the
+ * status can be read: the sentence the contract chose — "pool full: this worst
+ * case does not fit the equity left" — is in there somewhere, and a trader
+ * reading `{"index":0,"kind":{...}}` learns nothing. */
+export function failureText(value: unknown): string {
+  const panic = findExecutionError(value) ?? findExecutionError(jsonOf(value));
+  if (panic === null) return (value instanceof Error ? value.message : String(value ?? "")).slice(0, 240);
+  return panic.replace(/^Smart contract panicked:\s*/, "");
+}
+
+function jsonOf(value: unknown): unknown {
+  const text = value instanceof Error ? value.message : String(value ?? "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end <= start) return null;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function findExecutionError(node: unknown): string | null {
+  if (node === null || typeof node !== "object") return null;
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === "ExecutionError" && typeof value === "string") return value;
+    const nested = findExecutionError(value);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
 export class Chain {
   readonly session: Session;
   private readonly near: any;
@@ -101,18 +133,25 @@ export class Chain {
     { gas = TGAS, deposit = "0", contract = this.options }: { gas?: bigint; deposit?: string; contract?: string } = {},
   ): Promise<CallResult> {
     const account = await this.account(role);
-    const outcome = await account.functionCall({
-      contractId: contract,
-      methodName: method,
-      args: encode(args),
-      gas,
-      attachedDeposit: BigInt(deposit),
-    });
+    let outcome: any;
+    try {
+      outcome = await account.functionCall({
+        contractId: contract,
+        methodName: method,
+        args: encode(args),
+        gas,
+        attachedDeposit: BigInt(deposit),
+      });
+    } catch (error) {
+      // The SDK throws on a failed transaction before the status below can be
+      // read, so the contract's sentence has to be unwrapped here as well.
+      throw new Error(`${method} reverted: ${failureText(error)}`);
+    }
     this.transactions += 1;
     const burnt = outcome.receipts_outcome.reduce((total: bigint, r: any) => total + BigInt(r.outcome.gas_burnt), 0n);
     this.gasBurnt += burnt;
     if (outcome.status?.Failure) {
-      throw new Error(`${method} reverted: ${JSON.stringify(outcome.status.Failure).slice(0, 400)}`);
+      throw new Error(`${method} reverted: ${failureText(outcome.status.Failure)}`);
     }
     return {
       hash: outcome.transaction.hash,

@@ -127,7 +127,7 @@ Each phase lands with tests and is useful alone; nothing waits for the whole set
 | 3 | `core::fees` + `core::pool` | capacity can never be exceeded, and custody is conserved under any fill sequence | ✅ 20 tests, incl. a 500-step deterministic sequence |
 | 4 | contract depends on `core` | book tests still green *and* a vault lifecycle runs on a real chain | ✅ 62 Rust tests then (125 now), 18 on-chain txs, custody conserved |
 | 5 | `engine` | the screen trades against a live pool at real prices, zero bots | ✅ 44 tests, live tape, 72 series listed from `/plan`, and a settlement that pays: one feed print fixes the whole grid and a ticket settles out of `equity` ([evidence](../evidence/chain/settlement-live.txt)) |
-| 6 | `api` + `web` in TS | the journey script passes end to end against the TS stack | ✅ gateway on 8790 with 46 tests, serving the page; the JS ledger it replaced is deleted and the screen reads only the gateway |
+| 6 | `api` + `web` in TS | the journey script passes end to end against the TS stack | ✅ gateway on 8790 with 55 tests, serving the page; the JS ledger it replaced is deleted and the screen reads only the gateway |
 | 7 | `consolation` + economics harness | 3,000 simulated epochs show the pool solvent and farming still −EV | ◐ `core::consolation` done — the −EV bound is a function and 500 random loss splits prove it; the harness and the contract wiring are open |
 
 Phase 4 landed the vault side of the contract: `pool_buy`, `pool_close`,
@@ -137,6 +137,12 @@ is the one whose `maker` is the contract account, which no caller can forge. It 
 nothing to the book escrow buckets — its money is already inside `equity` and
 `venue_locked` — so `expected_custody` grew one term and still reconciles to the
 token balance exactly.
+
+The first version of `pool_buy` took its mid from the caller. That was the hole the
+red-team pass found and paid out of LP equity, and the shape that closes it is
+`set_pool_quote`: the venue publishes a price per series, the vault trades at it or
+trades not, and a taker is left with only bounds — a budget on the way in, a floor on
+the way out. See [05-red-team.md](05-red-team.md).
 
 Phase 7 is the gate on the whole business: if no `s` survives a directional streak
 without pricing users out, the shape is wrong and a simulation should be where we
