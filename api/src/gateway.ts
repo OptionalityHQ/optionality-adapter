@@ -22,6 +22,22 @@ export type Side = "long" | "short";
  * Rust Debug string, `get_series` as a JSON object; both land here. */
 export type Settlement = "open" | "pending" | "fixed" | "void";
 
+/** One read's index and open PnL, as the gateway recorded them. */
+export interface HistoryPoint {
+  atMs: number;
+  spot: number | null;
+  open: number | null;
+}
+
+/** What the session chart draws, and how to describe it honestly. */
+export interface SessionHistory {
+  points: HistoryPoint[];
+  spanS: number;
+  sampledEveryS: number;
+}
+
+export const EMPTY_HISTORY: SessionHistory = { points: [], spanS: 0, sampledEveryS: 1 };
+
 /**
  * Amounts leave the contract as `U128` wrappers (JSON strings) or as raw `u128`
  * (JSON numbers) depending on which struct they sit in, and a `number` above
@@ -1102,6 +1118,8 @@ export interface StatePayload {
   feed: RawRecord | null;
   /** The oracle's committee for this asset's feed: who may settle, and what they said. */
   oracle: OracleView | null;
+  /** This session's index and open PnL. Gone when the gateway is. */
+  history: SessionHistory;
   trades: string[];
   volumeBuckets: Bucket[];
   tape: { prints: number; realised: number; closed: ClosedRow[] };
@@ -1128,6 +1146,7 @@ export function buildState(input: {
   series: SeriesDetail | null;
   feed: RawRecord | null;
   oracle: OracleView | null;
+  history: SessionHistory;
   tape: Tape;
   you: { account: string; available: number; wallet: number } | null;
   lp: LpPosition;
@@ -1147,6 +1166,7 @@ export function buildState(input: {
     series: input.series,
     feed: input.feed,
     oracle: input.oracle,
+    history: input.history,
     trades: input.tape.rows.map((row) => row.text),
     volumeBuckets: input.tape.buckets.slice(-60),
     tape: { prints: input.tape.prints, realised: input.tape.realised, closed: input.tape.closed },

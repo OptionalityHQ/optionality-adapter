@@ -22,6 +22,7 @@ import {
   registryPairs,
   seriesStrike,
 } from "./gather.ts";
+import { History } from "./history.ts";
 import { type Call, describe, planAction } from "./actions.ts";
 import { marksFromEngine, mergeSide, normalizeBids, normalizeBook, normalizePool, normalizePrices, normalizePositions } from "./gateway.ts";
 
@@ -36,6 +37,9 @@ const ENGINE = arg("--engine", "http://127.0.0.1:8787");
 const SESSION = arg("--session", "data/chain-session.json");
 const DEMO = arg("--demo", "demo/index.html");
 const STREAM_MS = Number(arg("--stream-ms", "700"));
+
+/** This process's own record of the session: one sample a second, five minutes deep. */
+const history = new History();
 
 /** The reads `gather.ts` asks for, mapped onto the contract's own names. */
 function viewsFor(chain: Chain): Views {
@@ -389,6 +393,7 @@ async function main(): Promise<void> {
             strike,
             feed,
             tape,
+            history,
             holders,
           });
           json(200, state);

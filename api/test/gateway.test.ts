@@ -490,6 +490,7 @@ test("the payload says where its numbers came from", () => {
     "series",
     "feed",
     "oracle",
+    "history",
     "trades",
     "volumeBuckets",
     "tape",

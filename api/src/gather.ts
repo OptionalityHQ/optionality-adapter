@@ -25,6 +25,7 @@ import {
   buildOrders,
   buildPortfolio,
   buildState,
+  EMPTY_HISTORY,
   expiryChips,
   fromUnits,
   normalizeBids,
@@ -40,6 +41,7 @@ import {
   tickerFor,
 } from "./gateway.ts";
 import type { StatePayload } from "./gateway.ts";
+import type { History } from "./history.ts";
 
 export { seriesStrike } from "./gateway.ts";
 
@@ -197,6 +199,8 @@ export interface GatherInput {
   feed?: Record<string, unknown> | null;
   /** The venue tape, advanced by what the chain holds now. */
   tape?: Tape | null;
+  /** This session's samples, advanced by the same read that marks the positions. */
+  history?: History | null;
   /** Accounts whose open tickets belong on the tape — the demo's roles, not a
    * bot list: the venue only ever reports what it can read back. */
   holders?: string[];
@@ -373,11 +377,20 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
     exitable: fromUnits(lpValueUnits) > 0 && fromUnits(lpValueUnits) <= pool.freeEquity,
   };
 
+  const portfolio = buildPortfolio(positions, marksBySeries);
+  // One sample per read is the honest resolution: the index and the marked
+  // positions are read together, so the two lines are always of the same moment.
+  input.history?.push({
+    atMs: Date.now(),
+    spot: input.spot,
+    open: portfolio.rows.some((row) => row.open !== null) ? portfolio.totals.open : null,
+  });
+
   return buildState({
     now: Date.now(),
     spot: input.spot,
     chain,
-    positions: buildPortfolio(positions, marksBySeries),
+    positions: portfolio,
     orders,
     custody,
     pool,
@@ -387,6 +400,7 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
     series,
     feed: input.feed ?? null,
     oracle,
+    history: input.history?.series() ?? EMPTY_HISTORY,
     tape: input.tape ?? new Tape(),
     you: { account: input.account, available: youAvailable, wallet: youWallet },
     lp,
