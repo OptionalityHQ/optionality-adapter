@@ -742,8 +742,16 @@ export interface ExpiryChip {
  * their grids into one registry.
  */
 export function expiryChips(infos: SeriesInfo[], nowMs: number): ExpiryChip[] {
+  // A ladder past its expiry is not a market any more: its series still sit on
+  // chain until they settle or void, but a chip for them opens a grid with no
+  // venue behind it — and, being the oldest, it was also the one the page
+  // defaulted to. The whole list comes back only when every ladder is past, so a
+  // stopped venue still renders one.
+  const live = infos.filter((info) => info.expiryNs > nowMs * 1e6);
   const stamps: number[] = [];
-  for (const info of infos) if (!stamps.includes(info.expiryNs)) stamps.push(info.expiryNs);
+  for (const info of live.length > 0 ? live : infos) {
+    if (!stamps.includes(info.expiryNs)) stamps.push(info.expiryNs);
+  }
   return stamps
     .sort((a, b) => a - b)
     .map((expiryNs) => {
@@ -752,7 +760,9 @@ export function expiryChips(infos: SeriesInfo[], nowMs: number): ExpiryChip[] {
         ns: String(BigInt(expiryNs)),
         iso: date.toISOString(),
         label: expiryLabel(expiryNs, nowMs),
-        dte: Math.max(0, Math.ceil((date.getTime() - nowMs) / 86_400_000)),
+        // Whole days elapsed-to-expiry, floored: an expiry five hours out is
+        // today, not "1d", which is what rounding up used to print.
+        dte: Math.max(0, Math.floor((date.getTime() - nowMs) / 86_400_000)),
       };
     });
 }

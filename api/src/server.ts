@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { Chain } from "./chain.ts";
 import { type Asset, type Kind, type LadderSide, type PoolPrice, SCALE, Tape, amount, fromUnits, rejectSigning } from "./gateway.ts";
-import { type EngineMarks, type Views, type Registry, gatherState, registryForExpiry, seriesStrike } from "./gather.ts";
+import { type EngineMarks, type Views, type Registry, SERIES_WINDOW, gatherState, registryForExpiry, seriesStrike } from "./gather.ts";
 import { type Call, describe, planAction } from "./actions.ts";
 import { marksFromEngine, mergeSide, normalizeBids, normalizeBook, normalizePool, normalizePrices, normalizePositions } from "./gateway.ts";
 
@@ -62,11 +62,33 @@ function viewsFor(chain: Chain): Views {
  * not among them: it is read off the chain with `get_pool_prices`, because the
  * contract only trades at the mid the venue published, in Rust integers.
  */
-/** Pull the engine's current ladder, the same rows the screen already renders. */
+/**
+ * The expiries the venue lists, nearest first. A screen with one ladder was a
+ * screen with one market; the schedule is what turns the strip into a week.
+ */
+async function engineExpiries(): Promise<string[]> {
+  try {
+    const response = await fetch(`${ENGINE}/health`);
+    if (!response.ok) return [];
+    const body = (await response.json()) as { expiries?: number[]; expiryNs?: number };
+    const list = Array.isArray(body.expiries) ? body.expiries : body.expiryNs === undefined ? [] : [body.expiryNs];
+    return list.map((ns) => String(ns));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Pull the engine's ladder for one expiry. The marks move with the tenor — a
+ * week out is worth more than an hour out — so the rows have to be the ones the
+ * expiry on screen asked for, not whichever ladder the engine happened to name.
+ */
 async function engineRows(
   asset: Asset,
+  expiryNs?: string,
 ): Promise<{ rows: Array<{ strike: number; put: LadderSide | null; call: LadderSide | null }>; spot: number | null; expiryNs: string }> {
-  const response = await fetch(`${ENGINE}/state?asset=${asset}`);
+  const named = expiryNs && /^\d+$/.test(expiryNs) ? `&expiry_ns=${expiryNs}` : "";
+  const response = await fetch(`${ENGINE}/state?asset=${asset}${named}`);
   if (!response.ok) throw new Error(`engine ${asset} state failed: ${response.status}`);
   const body = (await response.json()) as {
     spot: number | null;
@@ -129,10 +151,10 @@ async function engineRows(
  * page opened late in the evening would otherwise be shown a grid that had
  * already run off while tonight's live one sat outside the filter.
  */
-function expiryWanted(requested: string, liveExpiryNs: string): string {
+function expiryWanted(requested: string, expiries: string[]): string {
   if (/^\d+$/.test(requested)) return requested;
   if (requested.length >= 10) return requested.slice(0, 10);
-  return liveExpiryNs;
+  return expiries[0] ?? "";
 }
 
 /**
@@ -213,9 +235,16 @@ async function main(): Promise<void> {
   ) => {
     const ids = await views.seriesIds();
     const pairs: Array<[number, unknown]> = [];
-    for (const seriesId of ids.slice(-400)) pairs.push([seriesId, await views.getSeries(seriesId)]);
-    const { rows, expiryNs: liveExpiry } = await engineRows(asset);
-    const registry: Registry = registryForExpiry(pairs, expiryWanted(expiry, liveExpiry), asset);
+    for (const seriesId of ids.slice(-SERIES_WINDOW)) pairs.push([seriesId, await views.getSeries(seriesId)]);
+    // The ladder for the expiry the click is about, not the nearest one: the two
+    // are a week apart and the marks differ by the tenor.
+    const wanted = expiryWanted(expiry, await engineExpiries());
+    const { rows } = await engineRows(asset, wanted);
+    // No fallback on a trade: a click on one expiry must plan against that
+    // expiry, and a registry that quietly answers with a ladder a week away is a
+    // click that fills at a price the trader never saw.
+    const registry: Registry = registryForExpiry(pairs, wanted, asset, false);
+    if (registry.list.length === 0) throw new Error("that expiry is not listed on chain");
     const marks = marksFromEngine(rows);
     const seriesId = registry.idFor(asset, kind, strike);
     const info = seriesId === null ? null : registry.info(seriesId);
@@ -330,8 +359,9 @@ async function main(): Promise<void> {
       const requestedAsset = asset as Asset;
       return void (async () => {
         try {
-          const [{ rows, spot, expiryNs }, feed] = await Promise.all([engineRows(requestedAsset), feedFromEngine()]);
-          const expiry = expiryWanted(wanted, expiryNs);
+          const [expiries, feed] = await Promise.all([engineExpiries(), feedFromEngine()]);
+          const expiry = expiryWanted(wanted, expiries);
+          const { rows, spot } = await engineRows(requestedAsset, expiry);
           const strikes = rows.map((row) => row.strike);
           const state = await gatherState({
             asset: requestedAsset,

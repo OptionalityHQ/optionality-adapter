@@ -104,6 +104,7 @@ export function registryForExpiry(
   pairs: Array<[number, unknown]>,
   expiry: string,
   asset: Asset,
+  fallback = true,
 ): Registry & { list: SeriesInfo[]; expiries: SeriesInfo[] } {
   const byId = new Map<number, SeriesInfo>();
   const byCell = new Map<string, number>();
@@ -120,7 +121,7 @@ export function registryForExpiry(
       typeof wanted === "number" ? Math.abs(info.expiryNs - wanted) <= 1e6 : expiryDate(info.expiryNs) === wanted,
     );
   let chosen = matching(exact ? stamp : expiry);
-  if (chosen.length === 0 && all.length > 0) {
+  if (fallback && chosen.length === 0 && all.length > 0) {
     // The engine names the ladder it is marking and the operator lists that
     // expiry a tick later, so for a minute the chain holds no series with the
     // stamp the screen was given. An empty grid is the wrong answer to that:
@@ -147,6 +148,11 @@ export function registryForExpiry(
     expiries: all,
   };
 }
+
+/** How many series one read covers: a week of ladders, newest first. The trade
+ * path reads the same window, because a window that missed the nearest ladder
+ * made a click on it resolve to a week out. */
+export const SERIES_WINDOW = 640;
 
 export interface GatherInput {
   asset: Asset;
@@ -175,8 +181,10 @@ export interface GatherInput {
 export async function gatherState(input: GatherInput): Promise<StatePayload> {
   const ids = await input.views.seriesIds();
   // Cap the read: a live venue accumulates series every day, and the screen only
-  // shows the ones it can price. Newest first, because that is the expiry in use.
-  const recent = ids.slice(-400);
+  // shows the ones it can price. The schedule lists seven ladders of about
+  // seventy-five series, so the window has to hold all of them — newest first,
+  // because that is the order the operator listed them in.
+  const recent = ids.slice(-SERIES_WINDOW);
   const pairs: Array<[number, unknown]> = [];
   for (const seriesId of recent) {
     pairs.push([seriesId, await input.views.getSeries(seriesId)]);

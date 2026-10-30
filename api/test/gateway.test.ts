@@ -507,7 +507,16 @@ test("the expiry strip comes from the chain's own series", () => {
   ];
   const chips = expiryChips(infos, now);
   assert.equal(chips.length, 2, "one chip per expiry the chain actually has, not per day");
-  assert.equal(chips[0].dte, 1);
+  // An expired ladder is not a chip while a live one exists: the oldest chip is
+  // the one the page opens on, and opening on a dead grid is worse than a short
+  // strip. With nothing live, the strip still renders so the page is not blank.
+  const expired = { ...infos[0], expiryNs: Number(at(-2)) };
+  assert.deepEqual(expiryChips([expired, ...infos], now).map((chip) => chip.label), chips.map((chip) => chip.label));
+  assert.equal(expiryChips([expired], now).length, 1, "a stopped venue still renders its last ladder");
+  // Whole days, floored: an expiry an hour away is today. Rounding up printed
+  // "1d" on a two-hour market, which is not what the chip is claiming.
+  assert.equal(chips[0].dte, 0);
+  assert.equal(chips[1].dte, 1, "twenty-five hours is tomorrow");
   assert.match(chips[0].label, /11:00 UTC$/);
   assert.match(chips[1].label, /31 Oct/, "the next day is dated, not clocked");
   // The stamp is text so a nanosecond epoch survives a trip through the page.

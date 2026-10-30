@@ -129,15 +129,20 @@ expiry so the operator had nothing left to list, and an hour after `venue.sh sta
 screen was a grid of dashes under a live index. No suite caught it because every test
 runs inside one expiry.
 
-- The engine rolls the tenor **before** it dies (`serve::roll_expiry`), with
-  `--roll-lead-secs` (default 600) as the room the operator gets; a lead longer than
-  half the ladder's life is capped, so a short tenor cannot roll on every request.
-- The operator lists a ladder as soon as the engine names an expiry the chain does not
-  hold (`ladder_is_listed`) instead of waiting for its own minute cadence, and quotes
-  only that ladder — so the outgoing one runs off rather than trading on a price nobody
-  refreshes.
-- The gateway falls back to the nearest expiry the chain actually holds while the new
-  one is being listed, so the screen never shows marks with no counterparty.
+- The venue now lists a **schedule** rather than a single ladder: two expiries inside the
+  day and a daily close out to a week, five of the seven inside three days. The nearest
+  one no longer has to roll for the venue to keep working — the others are already there.
+  A ladder past its expiry drops out of `/health`, so the operator stops listing it and
+  the screen stops defaulting to it.
+- The operator lists every ladder in the schedule as soon as one is missing from the
+  chain (`ladder_is_listed`) instead of waiting for its own minute cadence, and walks the
+  ladders in rotation to quote them.
+- The gateway resolves the expiry *before* reading the engine, so a ladder days out shows
+  its own marks and its own greeks; while a new ladder is being listed it falls back to
+  the nearest one the chain holds, so the screen never shows marks with no counterparty.
+- The trade path deliberately does **not** fall back. A click named an expiry; planning
+  it against another ladder was a fill at a price the trader never saw, and the strict
+  registry is what turned that into a refusal.
 
 Verified on a three-minute tenor (`EXPIRY_HOURS=0.05 scripts/venue.sh`): five rolls in
 six minutes, each one listed and re-quoted within an operator pass, the vault-priced

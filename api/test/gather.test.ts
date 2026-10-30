@@ -238,6 +238,28 @@ test("a registry is built for one expiry and asset, and skips what the chain can
   assert.deepEqual(registry.all().map((info) => info.seriesId), [2, 3, 4]);
 });
 
+test("a trade refuses an expiry the chain does not list instead of borrowing one", () => {
+  // Two ladders an hour apart. A request for a third must not quietly answer with
+  // one of them: that is how a click on a one-hour market got planned against a
+  // ladder a week out, at a price the trader never saw.
+  const at = (h: number) => Date.now() + h * 3_600_000;
+  const row = (low: string, ns: number) => ({
+    underlying: "ETH", kind: "Call", expiry_ns: String(Math.round(ns * 1e6)),
+    accept_until_ns: String(Math.round((ns + 60_000) * 1e6)), finalize_until_ns: String(Math.round((ns + 600_000) * 1e6)),
+    low_strike: low, high_strike: "2225000000", price_scale: "1000000", min_confidence_bps: 3000,
+    oracle_feed: "ETH-USD", settlement: "Open",
+  });
+  const pairs: Array<[number, unknown]> = [[1, row("2125000000", at(1))], [2, row("2125000000", at(25))]];
+  const near = String(Math.round(at(1) * 1e6));
+  assert.equal(registryForExpiry(pairs, near, "ETH", false).idFor("ETH", "Call", 2125), 1);
+  assert.equal(registryForExpiry(pairs, near, "ETH", false).list.length, 1, "one ladder, not both");
+  const missing = String(Math.round(at(5) * 1e6));
+  assert.equal(registryForExpiry(pairs, missing, "ETH", false).list.length, 0, "strict: nothing borrowed");
+  // The screen still shows something: it falls back to the nearest ladder the
+  // chain does hold, which is a display decision and not a trade.
+  assert.equal(registryForExpiry(pairs, missing, "ETH").idFor("ETH", "Call", 2125), 1);
+});
+
 test("the chain alone decides which strikes the ladder can trade", async () => {
   const state = await gatherState({
     asset: "ETH",
