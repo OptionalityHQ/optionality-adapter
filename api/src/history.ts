@@ -14,6 +14,10 @@ export interface Sample {
   spot: number | null;
   /** What the open tickets were worth against their cost, at what a close pays. */
   open: number | null;
+  /** How many seats of the settlement committee agreed on this read. */
+  agreeing: number | null;
+  /** The price the committee last fixed, in dollars. */
+  fix: number | null;
 }
 
 export interface SessionHistory {

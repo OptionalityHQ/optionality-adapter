@@ -384,6 +384,10 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
     atMs: Date.now(),
     spot: input.spot,
     open: portfolio.rows.some((row) => row.open !== null) ? portfolio.totals.open : null,
+    // The committee's state travels with the same read, so the consensus chart and
+    // the price chart are of one moment rather than two polls apart.
+    agreeing: oracle?.agreeingSeats ?? null,
+    fix: oracle?.lastFix?.price ?? null,
   });
 
   return buildState({

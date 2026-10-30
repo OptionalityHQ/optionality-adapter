@@ -63,6 +63,33 @@ lifecycles together. The vault's buckets are inside `expected_custody`, and a po
 ticket adds nothing to the book escrow totals — its money is already in equity and
 locked margin — so the reconciliation still lands on the token balance exactly.
 
+
+### The settlement path, in one picture
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Anyone
+  participant Venue as bounded-options
+  participant Oracle as price-oracle (committee)
+  participant Seats as 4 signer processes
+  participant Sources as Kraken · OKX · Pyth
+
+  Seats->>Sources: fetch its own feed
+  Seats->>Oracle: submit_observations (signed)
+  Oracle->>Oracle: quorum of distinct fresh seats, inside the band
+  Anyone->>Venue: request_settlement(series)
+  Venue->>Oracle: get_observations(feed, expiry, accept_until)
+  Oracle-->>Venue: fixes, oldest first, each naming its sources
+  Venue->>Venue: usable_fix: band, window, confidence, ≥2 distinct sources
+  Venue-->>Anyone: series Fixed (or Open, and void at the deadline)
+  Anyone->>Venue: settle_ticket(ticket)
+  Venue-->>Anyone: payout from the maker's collateral
+```
+
+The venue never asks who signed; it asks *how many distinct seats did*, and refuses a
+number that fewer than two of them put their key to.
+
 ## Gas is a call-site decision
 
 `withdraw` attaches 20 Tgas for the token transfer and 25 for its own callback. A

@@ -23,6 +23,7 @@ import {
   seriesStrike,
 } from "./gather.ts";
 import { History } from "./history.ts";
+import { projectSmile } from "./smile.ts";
 import { type Call, describe, planAction } from "./actions.ts";
 import { marksFromEngine, mergeSide, normalizeBids, normalizeBook, normalizePool, normalizePrices, normalizePositions } from "./gateway.ts";
 
@@ -399,6 +400,22 @@ async function main(): Promise<void> {
             holders,
           });
           json(200, state);
+        } catch (error) {
+          json(500, { ok: false, error: String(error instanceof Error ? error.message : error) });
+        }
+      })();
+    }
+    if (url.pathname === "/smile") {
+      const asset = url.searchParams.get("asset") === "BTC" ? "BTC" : "ETH";
+      return void (async () => {
+        try {
+          // The engine's own curve — it is the only party that can say what vol it
+          // prices a strike at, and this gateway's job here is to name the tenors.
+          const response = await fetch(`${ENGINE}/smile?asset=${asset}`);
+          if (!response.ok) throw new Error(`engine smile failed: ${response.status}`);
+          const view = projectSmile(await response.json(), Date.now());
+          if (!view) throw new Error("the engine answered a smile this gateway does not recognise");
+          json(200, view);
         } catch (error) {
           json(500, { ok: false, error: String(error instanceof Error ? error.message : error) });
         }

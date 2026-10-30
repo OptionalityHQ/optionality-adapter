@@ -27,6 +27,8 @@ export interface HistoryPoint {
   atMs: number;
   spot: number | null;
   open: number | null;
+  agreeing: number | null;
+  fix: number | null;
 }
 
 /** What the session chart draws, and how to describe it honestly. */

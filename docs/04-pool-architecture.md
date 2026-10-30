@@ -35,6 +35,28 @@ No business logic in TypeScript. The TS layer reads and forwards; it never decid
 what a trade costs. That rule is what makes the parity problem actually gone rather
 than merely tested.
 
+
+### One click, end to end
+
+```mermaid
+flowchart LR
+  T["trader clicks a cell"] --> G["gateway /state<br/>reads the ladder"]
+  G -->|"pool_buy(series, qty, maxPremium)"| V["bounded-options"]
+  V -->|"entry = mid + margin"| P(("vault<br/>equity"))
+  V -->|"ticket + collateral reserve"| L[("balances")]
+  T2["trader closes"] -->|"pool_close(ticket, minExit)"| V
+  V -->|"exit = mid − haircut"| P
+  subgraph invariants["what the contract holds"]
+    I1["reserved ≤ equity"]
+    I2["custody = ledger"]
+    I3["nobody but the venue names a price"]
+  end
+```
+
+The vault is the counterparty to every click, so the two numbers that matter are the
+entry it charges and the exit it pays — both derived from the mid it published itself,
+inside `core`, which is also the code the engine quotes with.
+
 ## Layout
 
 ```

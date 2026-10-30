@@ -6,6 +6,40 @@ browser. Each was reproduced before it was fixed. Evidence:
 [`evidence/security/probes-2026-10-30.txt`](../near-mvp/evidence/security/probes-2026-10-30.txt),
 [`near-mvp/evidence/journey/`](../near-mvp/evidence/journey).
 
+
+## Where the trust actually is
+
+```mermaid
+flowchart LR
+  subgraph operators["people we do not run"]
+    K["Kraken"]:::untrusted
+    O["OKX"]:::untrusted
+    P["Pyth contract on Base"]:::untrusted
+  end
+  subgraph ours["this machine"]
+    E["engine (index)"] --> R["relay<br/><i>chooses when, not what</i>"]
+    R --> S1["signer: venue-index"]
+    R --> S2["signer: kraken"]
+    R --> S3["signer: okx"]
+    R --> S4["signer: pyth"]
+    K --> S2
+    O --> S3
+    P --> S4
+    E --> S1
+  end
+  S1 --> Q["price-oracle<br/>quorum 2, distinct seats, band 100 bps"]
+  S2 --> Q
+  S3 --> Q
+  S4 --> Q
+  Q --> C["bounded-options<br/>its own floor: band, window, confidence, ≥2 names"]
+  C --> M[("money")]
+  classDef untrusted fill:#2a1f1f,stroke:#a15555,color:#e8c0c0
+```
+
+The relay can stop a price and cannot make one. A seat can only speak for what it
+fetched. The venue checks the committee's answer rather than trusting it. Below that
+layer the trust is the chain's, which is the one thing here that is not ours to grant.
+
 ## 1. The caller priced the vault — critical, fixed
 
 `pool_buy(series, quantity, mid_units, budget)` and `pool_close(ticket, mid_units)`

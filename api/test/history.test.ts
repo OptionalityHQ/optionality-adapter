@@ -48,6 +48,17 @@ test("an unmarked position is a gap in the line, not a zero", () => {
   assert.equal(history.series("ETH").points[0].open, null, "nothing to mark is not a flat PnL");
 });
 
+test("the committee's state travels with the same sample", () => {
+  const history = new History(10, 1_000);
+  history.push("ETH", { atMs: 1_000, spot: 2_300, open: 0, agreeing: 3, fix: 2_299.5 });
+  history.push("ETH", { atMs: 2_000, spot: 2_301, open: 0, agreeing: 1, fix: null });
+  const points = history.series("ETH").points;
+  assert.equal(points[0].agreeing, 3);
+  assert.equal(points[0].fix, 2_299.5);
+  assert.equal(points[1].agreeing, 1, "a quorum that fell apart is visible, not filtered out");
+  assert.equal(points[1].fix, null, "and no fix is a gap, not the last price again");
+});
+
 test("each asset has its own line", () => {
   const history = new History(10, 1_000);
   history.push("ETH", { atMs: 1_000, spot: 2_300, open: 0 });
