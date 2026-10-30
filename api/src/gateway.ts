@@ -556,7 +556,11 @@ export function mergeSide(
   // vault's published price. The model's spread is only a chart line, and a
   // ladder that shows it as the ask shows a number the click will not fill at —
   // between two polls the index moves and the trader reads that as a broken venue.
-  const ask = bestOffer ? bestOffer.unitPremium : (poolAsk ?? base.ask);
+  // A person's offer, or the vault's published price — and nothing else. The
+  // model's ask used to be the last fallback, which meant the column advertised a
+  // price that `pool_buy` refuses ("the venue is not selling it") and the trader
+  // read the refusal as a broken venue. No quote is a dash, not a model number.
+  const ask = bestOffer ? bestOffer.unitPremium : (poolAsk ?? 0);
   // The bid stays the book's or the model's: the vault pays its exit to a holder
   // closing a ticket, which is not a bid a seller can write into. The rail shows
   // that number where it belongs, beside the button that uses it.

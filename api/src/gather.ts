@@ -380,7 +380,7 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
   const portfolio = buildPortfolio(positions, marksBySeries);
   // One sample per read is the honest resolution: the index and the marked
   // positions are read together, so the two lines are always of the same moment.
-  input.history?.push({
+  input.history?.push(input.asset, {
     atMs: Date.now(),
     spot: input.spot,
     open: portfolio.rows.some((row) => row.open !== null) ? portfolio.totals.open : null,
@@ -400,7 +400,7 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
     series,
     feed: input.feed ?? null,
     oracle,
-    history: input.history?.series() ?? EMPTY_HISTORY,
+    history: input.history?.series(input.asset) ?? EMPTY_HISTORY,
     tape: input.tape ?? new Tape(),
     you: { account: input.account, available: youAvailable, wallet: youWallet },
     lp,

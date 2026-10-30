@@ -243,7 +243,53 @@ our own contract is the next increment. The four keys are also four processes on
 rather than four operators: independence of prices and of signing, not yet of deployment. A
 seat's key is not rotated and lives in RAM for the life of the sandbox.
 
-## 9. Not exploited, and why
+## 9. The floor counted entries, not voices — fixed
+
+Second pass, run with the `cso` audit harness on a branch off `harden` (run
+`1793373317336-0042034ecac15cb6`, completeness **partial**: one scope, static only, no
+history or supply-chain pass).
+
+Finding: the venue's own last line of defence, `usable_fix`, required
+`obs.sources.len() >= 2`. That is a count of *entries*. The oracle the venue ships
+deduplicates, but the venue explicitly does not trust that oracle — it parses its answer
+with `sources` defaulting to empty — so a replaced or buggy oracle returning
+`sources: ["venue-index", "venue-index"]` satisfied the check and settled a series on one
+party's word. The layer whose whole purpose is "however it is delivered, two voices" was
+counting one voice twice.
+
+Fixed: the predicate and the stored provenance now both go through `distinct_sources`,
+which sorts and deduplicates. `one_source_named_twice_is_still_one_source` asserts a
+repeated name cannot settle a series and that the honest pair still does.
+
+Two more defects the same pass surfaced, both mine from the previous rounds:
+
+- **The session chart was one line for the whole venue.** `History` kept a single series,
+  so a browser that looked at ETH and then BTC had an index line jumping between 2,300 and
+  77,000 and a PnL measured against it. Samples are keyed by asset now, and a chart is one
+  market.
+- **The ask column quoted a price nobody would sell at.** When the vault had no live quote and
+  nobody was resting, the ladder fell back to the model's ask. A buyer clicked a price, and
+  `pool_buy` answered *the venue is not selling it* — the same disagreement between screen and
+  chain as finding 4, reintroduced by the fallback. The ask column now shows what can actually
+  be taken: a person's offer, the vault's published entry, or a dash. The mark stays on the row
+  for the chart; it is not a price.
+- **A seat's socket was an amplifier.** `observe` fetched on every call, so any local
+  process could put a loop on it and have the seat hammer Kraken until the seat — and with
+  it a vote — was rate-limited out of the committee. A seat now reads a feed at most once a
+  second and serves the cached observation in between, which the oracle would refuse as a
+  replay anyway.
+
+Dispositions, not findings: an abandoned maker's escrowed collateral is recoverable only by
+that maker's key (`cancel_offer` accepts an expired offer; `prune_offers` moves no funds and
+keeps the record). That is the design — the alternative is anyone being able to cancel
+somebody else's order.
+
+Coverage gaps this run left open, recorded rather than papered over: no git-history or
+secret-archaeology pass, no supply-chain pass, no reproduction harness (the runtime profile
+is missing for this stack), and the gateway's `/action` origin guard was assessed from its
+tests rather than re-read end to end.
+
+## 10. Not exploited, and why
 
 | surface | status |
 | --- | --- |

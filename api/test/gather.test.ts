@@ -395,7 +395,8 @@ test("a series the venue has not quoted has no vault side to take", async () => 
   assert.equal(at2400.call?.takeAsk, 0.05, "a resting offer is still a counterparty");
   assert.equal(at2400.call?.takeAskFrom, "book");
   assert.equal(at2400.put?.takeAsk, null, "with nobody resting either there is nothing to buy");
-  assert.equal(at2400.put?.ask, 0.055, "and the model's spread still reads as a mark, not as a fill");
+  assert.equal(at2400.put?.ask, 0, "and the ask column says so rather than quoting the model");
+  assert.equal(at2400.put?.mark, 0.05, "the mark itself is still on the row, for the chart");
   assert.equal(state.positions.rows[0].exitUnit, null, "a ticket with no quote has no exit price to show");
   assert.equal(state.positions.totals.closable, 0, "the rail will not offer a close the contract would refuse");
 });

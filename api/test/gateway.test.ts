@@ -307,7 +307,10 @@ test("a resting quote beats the model, and the vault is still a candidate", () =
   assert.equal(unquoted?.poolBid, null);
   assert.equal(unquoted?.poolQuoteAgeS, null);
   assert.equal(unquoted?.takeAsk, null, "a mark is not a price anyone can take");
-  assert.equal(unquoted?.ask, 0.055, "and only then does the model's spread stand as the display");
+  // And the column says so. The model's spread used to stand here as the display,
+  // which advertised a price the vault refuses and made the refusal look like a bug.
+  assert.equal(unquoted?.ask, 0, "no quote is a dash, not the model's ask");
+  assert.equal(unquoted?.mark, 0.05, "the mark still travels for the chart");
 
   const bookOnly = mergeSide(null, normalizeBook([BOOK_ROW]), [], 2, "fixed");
   assert.equal(bookOnly?.ask, 0.05);
@@ -746,6 +749,34 @@ test("the committee panel says who may settle and what they said", () => {
   const noFix = normalizeCommittee({ ...COMMITTEE_JSON, last_fix: null });
   assert.equal(noFix?.lastFix, null);
   assert.equal(noFix?.disagreementBps, null);
+});
+
+test("the ask column never shows a price the vault will refuse", () => {
+  const mark = {
+    mark: 0.05,
+    bid: 0.045,
+    ask: 0.055,
+    markIv: 0.45,
+    bidIv: 0.44,
+    askIv: 0.46,
+    entryIv: 0.48,
+    exitIv: 0.41,
+    delta: 0.1,
+    gamma: 0,
+    vega: 0,
+    theta: 0,
+    low: 2_400,
+    high: 2_500,
+  };
+  // The model has a spread and nobody is resting: the ask is absent, because the
+  // only price a click can fill at is the vault's published entry and it has none.
+  const unquoted = mergeSide(mark, [], [], 2, "open", null);
+  assert.ok(unquoted);
+  assert.equal(unquoted.ask, 0, "no quote is a dash, not a model number");
+  assert.equal(unquoted.takeAsk, null, "and there is nothing to take");
+  // The mark still travels: the ladder draws it as a chart line.
+  assert.equal(unquoted.mark, 0.05);
+  assert.equal(unquoted.bid, 0.045, "the bid column keeps the model's, which is a reference not a sale");
 });
 
 test("the IV columns name the price in the same row", () => {
