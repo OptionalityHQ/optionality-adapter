@@ -191,10 +191,14 @@ swapped session file all looked exactly like a normal settlement on chain. The e
   drift into a world where every signature is simply refused. The relay delivers prices;
   it cannot speak for a seat it does not hold the key for.
 - The keys are not in the relay either. Each seat runs in its own `oracle-signer`
-  process, generates its key on start and answers one socket question — "sign this" —
-  with its own name baked into the message, so a relay cannot relabel a vote it already
-  holds. The relay's power is now exactly two things it should have: which prices to
-  fetch, and when to deliver them.
+  process, generates its key on start, fetches its *own* source and answers one socket
+  question — "what did you see about this feed" — signing what it read, with its own
+  name baked into the message so a relay cannot relabel a vote it already holds. The
+  first version of this kept the fetch in the relay and offered "sign this number":
+  any process that could open the socket could have had a seat vouch for a price it
+  invented, which is a weaker claim than "the relay cannot forge" sounds. There is no
+  such request now, and the relay's power is two things it should have: when to ask,
+  and whether to deliver.
 - Freshness has two halves, and the second one was missing at first: a seat is fresh when
   the relay delivered recently **and** the price itself was published recently. Without
   the second half a source whose feed stalled could re-sign its last number with a

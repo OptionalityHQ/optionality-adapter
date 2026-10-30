@@ -300,8 +300,13 @@ test("a trade refuses an expiry the chain does not list instead of borrowing one
     low_strike: low, high_strike: "2225000000", price_scale: "1000000", min_confidence_bps: 3000,
     oracle_feed: "ETH-USD", settlement: "Open",
   });
-  const pairs: Array<[number, unknown]> = [[1, row("2125000000", at(1))], [2, row("2125000000", at(25))]];
-  const near = String(Math.round(at(1) * 1e6));
+  // One clock reading, used for both the series and the request: two `Date.now()`
+  // calls land a millisecond or two apart, and the registry matches to a
+  // millisecond, so the second reading is the difference between a test that
+  // passes and one that fails on a slow machine.
+  const when = at(1);
+  const pairs: Array<[number, unknown]> = [[1, row("2125000000", when)], [2, row("2125000000", at(25))]];
+  const near = String(Math.round(when * 1e6));
   assert.equal(registryForExpiry(pairs, near, "ETH", false).idFor("ETH", "Call", 2125), 1);
   assert.equal(registryForExpiry(pairs, near, "ETH", false).list.length, 1, "one ladder, not both");
   const missing = String(Math.round(at(5) * 1e6));
