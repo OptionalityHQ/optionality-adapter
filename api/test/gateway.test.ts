@@ -748,6 +748,68 @@ test("the committee panel says who may settle and what they said", () => {
   assert.equal(noFix?.disagreementBps, null);
 });
 
+test("the IV columns name the price in the same row", () => {
+  const mark = {
+    mark: 0.05,
+    bid: 0.045,
+    ask: 0.055,
+    markIv: 0.45,
+    bidIv: 0.44,
+    askIv: 0.46,
+    entryIv: 0.48,
+    exitIv: 0.41,
+    delta: 0.1,
+    gamma: 0,
+    vega: 0,
+    theta: 0,
+    low: 2_400,
+    high: 2_500,
+  };
+  const pool: PoolPrice = {
+    seriesId: 2,
+    midUnits: "50000",
+    entryUnits: "55000",
+    exitUnits: "45000",
+    stampNs: 1,
+    ageNs: 0,
+  };
+
+  // Nothing resting: the ask column shows the vault's own entry price, so the ask
+  // IV is the vol at that entry — not at the model's ask, which nobody trades.
+  const alone = mergeSide(mark, [], [], 2, "open", pool);
+  assert.ok(alone);
+  assert.equal(alone.ask, 0.055);
+  assert.equal(alone.askIv, 0.48);
+  assert.equal(alone.bidIv, 0.44, "the bid column is the model's, and so is its vol");
+
+  // A person's offer is the ask now. No model explains their number, so the
+  // column says "—" rather than describing the vault's price beside it.
+  const personOffer = mergeSide(
+    mark,
+    [{ offerId: 7, maker: "maker-1.testnet", quantity: 1, premium: 0.05, unitPremium: 0.05 }],
+    [],
+    2,
+    "open",
+    pool,
+  );
+  assert.ok(personOffer);
+  assert.equal(personOffer.ask, 0.05);
+  assert.equal(personOffer.askIv, null);
+
+  // And the same on the bid side.
+  const personBid = mergeSide(
+    mark,
+    [],
+    [{ bidId: 9, owner: "maker-1.testnet", quantity: 1, premium: 0.04, unitPremium: 0.04 }],
+    2,
+    "open",
+    null,
+  );
+  assert.ok(personBid);
+  assert.equal(personBid.bid, 0.04);
+  assert.equal(personBid.bidIv, null);
+});
+
 test("a settled ticket names the seats that priced it", () => {
   const settled = normalizePositions(
     [

@@ -452,6 +452,10 @@ export interface MarkSide {
   markIv: number | null;
   bidIv: number | null;
   askIv: number | null;
+  /** The vol at the vault's own entry, which is the price its ask column shows. */
+  entryIv: number | null;
+  /** The vol at the vault's exit, which is what a close pays. */
+  exitIv: number | null;
   delta: number;
   gamma: number;
   vega: number;
@@ -468,6 +472,8 @@ export interface LadderSide {
   bidIv: number | null;
   askIv: number | null;
   markIv: number | null;
+  entryIv: number | null;
+  exitIv: number | null;
   delta: number;
   /** Straight from the engine's model — the screen shows them, so they travel
    * with the quote rather than being re-derived in the browser. */
@@ -530,6 +536,8 @@ export function mergeSide(
     markIv: null,
     bidIv: null,
     askIv: null,
+    entryIv: null,
+    exitIv: null,
     delta: 0,
     gamma: 0,
     vega: 0,
@@ -563,9 +571,15 @@ export function mergeSide(
     mark: base.mark,
     bid,
     ask,
-    bidIv: base.bidIv,
-    askIv: base.askIv,
+    // The IV columns name the price in the same row. A person's offer or bid is
+    // their own number and no model explains it, so the column says "—" rather
+    // than describing some other price; the vault's ask is its *entry*, so that
+    // is the vol the ask column carries.
+    bidIv: bestBid ? null : base.bidIv,
+    askIv: bestOffer ? null : base.entryIv,
     markIv: base.markIv,
+    entryIv: base.entryIv,
+    exitIv: base.exitIv,
     delta: base.delta,
     gamma: base.gamma,
     vega: base.vega,
@@ -1189,6 +1203,8 @@ export function marksFromEngine(rows: Array<{ strike: number; put: LadderSide | 
       markIv: side.markIv,
       bidIv: side.bidIv,
       askIv: side.askIv,
+      entryIv: side.entryIv,
+      exitIv: side.exitIv,
       delta: side.delta,
       gamma: side.gamma,
       vega: side.vega,

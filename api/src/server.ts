@@ -122,6 +122,8 @@ async function engineRows(
       bid: Number(raw.bid ?? 0),
       ask: Number(raw.ask ?? 0),
       markIv: nullable("markIv"),
+      entryIv: nullable("entryIv"),
+      exitIv: nullable("exitIv"),
       bidIv: nullable("bidIv"),
       askIv: nullable("askIv"),
       delta: Number(raw.delta ?? 0),
