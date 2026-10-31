@@ -15,6 +15,14 @@ that has never been deployed.
 - A demo top-up (`POST /demo/reset`, the header button) and `docs/demo-script.md`.
 - Gateway API reference (`docs/06`) and a runbook (`docs/07`).
 
+**Changed**
+
+- **The fee.** The venue boots at 50 bps over mid to open and 100 under mid to close, set
+  with `set_fee_terms` at boot (`MARGIN_BPS`/`IMPACT_BPS`). The prototype charged 400/1000,
+  a 13.5% round trip on a 0.10 premium, which was the single number most likely to stop
+  somebody trading. The contract's own default stays at 400/1000 so a deployment that
+  forgets to set a schedule is loudly expensive rather than quietly cheap.
+
 **Fixed**
 
 - The ask column no longer falls back to the model's price when the vault has no quote; it
@@ -40,6 +48,14 @@ that has never been deployed.
 - A seeded maker resting offers near the money.
 - A week of markets with per-ladder term structure, batched quoting and deadline-driven
   renewal; the registry read in batches.
+
+**Changed**
+
+- **The fee.** The venue boots at 50 bps over mid to open and 100 under mid to close, set
+  with `set_fee_terms` at boot (`MARGIN_BPS`/`IMPACT_BPS`). The prototype charged 400/1000,
+  a 13.5% round trip on a 0.10 premium, which was the single number most likely to stop
+  somebody trading. The contract's own default stays at 400/1000 so a deployment that
+  forgets to set a schedule is loudly expensive rather than quietly cheap.
 
 **Fixed**
 

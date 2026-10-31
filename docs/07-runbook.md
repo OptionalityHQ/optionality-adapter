@@ -22,6 +22,7 @@ with the chain host: Ctrl-C or `stop` takes the chain and every transaction with
 | `TICK_SECS` | `4` | how often the operator wakes up |
 | `LIST_SECS` | `30` | re-list cadence (it also re-lists the moment a ladder is missing) |
 | `MAKER_ROLE` / `ACTIVITY_ROLE` | `maker-1` / `taker-1` | the seeded maker and the seeded taker; set either to another role, or to an unfunded name to disable it |
+| `MARGIN_BPS` / `IMPACT_BPS` | `50` / `100` | what the venue charges: 0.5% over mid to open, 1% under mid to close. The contract's own default is the prototype's 400/1000; the host calls `set_fee_terms` at boot |
 | `ENGINE_PORT` / `GATEWAY_PORT` | `8791` / `8790` | ports |
 | `ASSETS` | `ETH,BTC` | which underlyings the engine and operator run |
 

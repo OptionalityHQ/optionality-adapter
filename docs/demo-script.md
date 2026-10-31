@@ -9,6 +9,10 @@ cd near-mvp && bash scripts/venue.sh     # ~3 minutes: builds, deploys, lists, q
 open http://127.0.0.1:8790
 ```
 
+The venue charges **0.5% over mid to open and 1% under mid to close** — a round trip of
+about 1.5% of the premium, not the prototype's 13.5%. The Fees page prints the schedule it
+is actually running.
+
 The header says **No wallet · simulated** because that is true. **Top up** mints the
 demo account back to 5,000,000 USDT if it ever runs short; pressing it while funded
 does nothing.
