@@ -8,22 +8,26 @@ Two kinds, kept apart on purpose.
 
 ```mermaid
 flowchart TB
-  subgraph docs["The five design docs"]
+  subgraph docs["The docs"]
     D1["1 · Hackathon MVP<br/><i>what and why</i>"]
     D2["2 · On-chain integration<br/><i>the chain path</i>"]
     D3["3 · Loser consolation<br/><i>the lottery, and why</i>"]
     D4["4 · Player-vs-Pool<br/><i>the architecture</i>"]
     D5["5 · Red team<br/><i>what broke, and the fix</i>"]
+    D6["6 · Gateway API<br/><i>the routes</i>"]
+    D7["7 · Runbook<br/><i>boot, health, failure modes</i>"]
   end
   D1 --> D4
   D1 --> D3
   D4 --> D2
   D2 --> D5
+  D2 --> D6
+  D6 --> D7
   D4 -.->|"claims"| D5
 ```
 
-Read 1 for the product, 4 for how it is built, 2 for what the chain executes, 5 for what
-has already gone wrong. Reference material lives under `reference/` and is never mixed
+Read 1 for the product, 4 for how it is built, 2 and 6 for what executes and how the
+screen asks for it, 7 for how to run it, 5 for what has already gone wrong. Reference material lives under `reference/` and is never mixed
 into ours — it is other people's systems, studied rather than adopted.
 
 Decision records, the agent workflow and the Vietnamese drafts live in an `internal/`
