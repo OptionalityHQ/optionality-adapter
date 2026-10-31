@@ -49,6 +49,22 @@ Buy on the nearest chip and keep the ticket. When the series expires the row swa
 the price the committee fixed — the provenance is on the row. If no print arrives inside
 the window the series voids and the premium comes back instead.
 
+## The same journey, automated
+
+The eight steps above are also a Playwright test, run against the live screen and the live
+chain:
+
+```
+near-mvp/scripts/e2e.sh              # 0 blockers expected, ~90 s
+near-mvp/scripts/e2e.sh --settle     # also holds a ticket to expiry and settles it
+```
+
+It clicks with Playwright's actionability checks (visible, stable, enabled, actually
+receives the event), fails on a console error or a failed request, checks that the smile
+canvas has pixels on it, measures the phone width, and leaves screenshots, a `trace.zip`
+you can replay, and a video of each journey — [journey-fast.mp4](../near-mvp/evidence/e2e/journey-fast.mp4)
+and [journey-settle.mp4](../near-mvp/evidence/e2e/journey-settle.mp4).
+
 ## What is deliberately not here
 
 No history beyond this session, no portfolio margin, no wallet, no deploy. The screen
