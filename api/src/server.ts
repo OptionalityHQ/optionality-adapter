@@ -504,6 +504,7 @@ async function main(): Promise<void> {
             expiry?: string;
             id?: number | string;
             side?: string;
+            fill?: string;
           };
           const asset = (parsed.asset === "BTC" ? "BTC" : "ETH") as Asset;
           const kind = (parsed.kind === "Call" ? "Call" : "Put") as Kind;

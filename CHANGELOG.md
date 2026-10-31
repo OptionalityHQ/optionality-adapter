@@ -15,8 +15,18 @@ that has never been deployed.
 - A demo top-up (`POST /demo/reset`, the header button) and `docs/demo-script.md`.
 - Gateway API reference (`docs/06`) and a runbook (`docs/07`).
 
+**Added**
+
+- **Fill or kill.** The order-type select now sends `min_quantity`, so a market take
+  is all-or-nothing — the contract already enforced it, the screen just never asked.
+  Verified live: three contracts against one resting is refused with *minimum quantity
+  not filled*; one contract fills.
+
 **Changed**
 
+- **The seeded maker now quotes inside the venue** (20 bps over mid, not 200). Lowering
+  the fee to 50 bps made every maker offer worse than the vault's own price, which
+  quietly turned the book into decoration; two cells are book-priced again.
 - **The fee.** The venue boots at 50 bps over mid to open and 100 under mid to close, set
   with `set_fee_terms` at boot (`MARGIN_BPS`/`IMPACT_BPS`). The prototype charged 400/1000,
   a 13.5% round trip on a 0.10 premium, which was the single number most likely to stop
@@ -49,8 +59,18 @@ that has never been deployed.
 - A week of markets with per-ladder term structure, batched quoting and deadline-driven
   renewal; the registry read in batches.
 
+**Added**
+
+- **Fill or kill.** The order-type select now sends `min_quantity`, so a market take
+  is all-or-nothing — the contract already enforced it, the screen just never asked.
+  Verified live: three contracts against one resting is refused with *minimum quantity
+  not filled*; one contract fills.
+
 **Changed**
 
+- **The seeded maker now quotes inside the venue** (20 bps over mid, not 200). Lowering
+  the fee to 50 bps made every maker offer worse than the vault's own price, which
+  quietly turned the book into decoration; two cells are book-priced again.
 - **The fee.** The venue boots at 50 bps over mid to open and 100 under mid to close, set
   with `set_fee_terms` at boot (`MARGIN_BPS`/`IMPACT_BPS`). The prototype charged 400/1000,
   a 13.5% round trip on a 0.10 premium, which was the single number most likely to stop

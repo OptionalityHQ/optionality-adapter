@@ -74,6 +74,12 @@ export interface ActionBody {
   amount?: number | string;
   shares?: number | string;
   expiry?: string;
+  /**
+   * Fill semantics for a market take: `"fok"` refuses a partial. The vault always
+   * writes the whole quantity at one price, so this only changes what happens when
+   * the fill would come from a person's resting offer.
+   */
+  fill?: string;
   /** A resting order's id, for the cancel path. */
   id?: number | string;
   /** Which book the id belongs to: offers and bids number their own. */
@@ -186,7 +192,10 @@ function planBuy(context: Context, body: ActionBody): Call[] {
           series_id: series.seriesId,
           quantity: toUnits(contracts).toString(),
           max_total_premium: marketBudget(limit, contracts, toUnits(take * contracts)).toString(),
-          min_quantity: null,
+          // Fill or kill: the contract refuses the fill if the book cannot cover
+          // the whole quantity, which is the difference between "I will take what
+          // is there" and "I want this size or nothing".
+          min_quantity: body.fill === "fok" ? toUnits(contracts).toString() : null,
         },
         tgas: TGAS,
       },

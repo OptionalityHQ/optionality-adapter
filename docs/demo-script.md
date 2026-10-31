@@ -46,6 +46,10 @@ does nothing.
    and the last fix with its signers. Kill the engine (`pkill -f target/debug/engine`)
    and watch our seat go `STALE — no vote` while the other three keep fixing.
 
+**Fill or kill.** Set *Order Type* to *Fill or kill* and buy more than is resting: the
+whole order is refused rather than partially filled. The contract was always able to do
+this (`min_quantity`); the screen now asks for it.
+
 ## Then let a market expire
 
 Buy on the nearest chip and keep the ticket. When the series expires the row swaps

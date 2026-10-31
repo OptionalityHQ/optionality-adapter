@@ -131,6 +131,20 @@ test("a buy takes the book when a resting offer beats the vault", () => {
   assert.equal(first(calls).args.min_quantity, null);
 });
 
+test("fill or kill asks for the whole quantity, or nothing at all", () => {
+  const resting = context({ side: sideOf({ takeAsk: 0.05, takeAskFrom: "book", bestOfferId: 0 }) });
+  const takeIt = planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.05 }, resting);
+  assert.equal(first(takeIt).args.min_quantity, null, "the default takes whatever is resting");
+
+  const allOrNone = planAction(
+    { type: "buy", strike: 2_400, quantity: 3, limit: 0.05, fill: "fok" },
+    resting,
+  );
+  assert.equal(first(allOrNone).method, "fill_market_order");
+  assert.equal(first(allOrNone).args.min_quantity, "3000000", "three contracts or the transaction reverts");
+  assert.equal(first(allOrNone).args.max_total_premium, "150000", "and the budget is unchanged");
+});
+
 test("a buy the market has already outpriced is refused before anything is signed", () => {
   // The limit came from a read one poll old and the venue has moved up to a
   // 0.0600 mid. The contract would call the budget too small; saying what
