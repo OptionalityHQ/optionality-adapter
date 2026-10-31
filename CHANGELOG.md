@@ -17,6 +17,12 @@ that has never been deployed.
 
 **Added**
 
+- **Hold to expiry, no fee.** A buyer can take the spread at the venue's *mid* with no
+  margin at all, in exchange for giving up both exits: the ticket cannot be closed back to
+  the pool or sold to a bidder, and settlement is unchanged. Contract-level
+  (`pool_buy_held`, a `held` flag on the ticket that both exit paths check), with a
+  **Hold to expiry · no fee** toggle on the ticket and a `held` row in the portfolio that
+  shows no exit price and no PnL, because there is neither.
 - **Fill or kill.** The order-type select now sends `min_quantity`, so a market take
   is all-or-nothing — the contract already enforced it, the screen just never asked.
   Verified live: three contracts against one resting is refused with *minimum quantity
@@ -61,6 +67,12 @@ that has never been deployed.
 
 **Added**
 
+- **Hold to expiry, no fee.** A buyer can take the spread at the venue's *mid* with no
+  margin at all, in exchange for giving up both exits: the ticket cannot be closed back to
+  the pool or sold to a bidder, and settlement is unchanged. Contract-level
+  (`pool_buy_held`, a `held` flag on the ticket that both exit paths check), with a
+  **Hold to expiry · no fee** toggle on the ticket and a `held` row in the portfolio that
+  shows no exit price and no PnL, because there is neither.
 - **Fill or kill.** The order-type select now sends `min_quantity`, so a market take
   is all-or-nothing — the contract already enforced it, the screen just never asked.
   Verified live: three contracts against one resting is refused with *minimum quantity

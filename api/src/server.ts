@@ -505,6 +505,7 @@ async function main(): Promise<void> {
             id?: number | string;
             side?: string;
             fill?: string;
+            hold?: boolean;
           };
           const asset = (parsed.asset === "BTC" ? "BTC" : "ETH") as Asset;
           const kind = (parsed.kind === "Call" ? "Call" : "Put") as Kind;

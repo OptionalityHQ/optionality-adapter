@@ -46,6 +46,11 @@ does nothing.
    and the last fix with its signers. Kill the engine (`pkill -f target/debug/engine`)
    and watch our seat go `STALE — no vote` while the other three keep fixing.
 
+**Hold to expiry.** Toggle *Hold to expiry · no fee* and buy: the ticket is written at the
+**mid**, with no venue margin, and the button says so. The position then reads *held to
+expiry · no early close* — no Close button, no unrealised PnL, because there is no price it
+could take. That is the trade: the fee is the exit you gave up.
+
 **Fill or kill.** Set *Order Type* to *Fill or kill* and buy more than is resting: the
 whole order is refused rather than partially filled. The contract was always able to do
 this (`min_quantity`); the screen now asks for it.

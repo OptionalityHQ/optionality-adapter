@@ -80,6 +80,11 @@ export interface ActionBody {
    * the fill would come from a person's resting offer.
    */
   fill?: string;
+  /**
+   * Hold to expiry: buy from the vault at the mid, with no venue margin, and give
+   * up the right to close or sell on. The contract enforces the commitment.
+   */
+  hold?: boolean;
   /** A resting order's id, for the cancel path. */
   id?: number | string;
   /** Which book the id belongs to: offers and bids number their own. */
@@ -209,6 +214,25 @@ function planBuy(context: Context, body: ActionBody): Call[] {
   const price = context.price;
   if (price === null) {
     throw new Error("the vault is not writing this spread: the venue has no live price for it");
+  }
+  // Hold to expiry: the same purchase, at the mid and with no margin, in exchange
+  // for giving up both exits. The budget is the mid itself — there is no fee
+  // component to add, and a ceiling above the mid would only be a number the
+  // contract has already refused to charge.
+  if (body.hold) {
+    const mid = amount(price.midUnits);
+    return [
+      {
+        contract: "options",
+        method: "pool_buy_held",
+        args: {
+          series_id: series.seriesId,
+          quantity: toUnits(contracts).toString(),
+          max_total_premium: (mid + mid / 100n).toString(),
+        },
+        tgas: TGAS,
+      },
+    ];
   }
   return [
     {
@@ -474,6 +498,8 @@ export function describe(calls: Call[], body: ActionBody, context: Context): str
       const entry = context.price ? Number(amount(context.price.entryUnits)) / Number(SCALE) : 0;
       return `bought ${contracts}x from the pool at ${(entry / contracts).toFixed(4)} all-in`;
     }
+    case "pool_buy_held":
+      return `bought and held ${contracts}x at the mid, no fee — no early close`;
     case "fill_market_order":
       return `took ${contracts}x off the book`;
     case "pool_close":

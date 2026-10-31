@@ -121,6 +121,16 @@ test("a buy with nobody resting goes to the pool, at the venue's own mid", () =>
   assert.equal(first(calls).tgas, 30n);
 });
 
+test("a held buy pays the mid and asks the contract to hold it", () => {
+  const calls = planAction({ type: "buy", strike: 2_400, quantity: 1, limit: 0.06, hold: true }, context());
+  assert.equal(first(calls).method, "pool_buy_held");
+  assert.equal(first(calls).args.quantity, "1000000");
+  // The mid is 0.05 and there is no fee to add; the ceiling is the mid plus one
+  // percent of slack, never the loaded entry the ordinary path would send.
+  assert.equal(first(calls).args.max_total_premium, "50500");
+  assert.notEqual(first(calls).args.max_total_premium, "52000", "the loaded entry is not what a held ticket pays");
+});
+
 test("a buy takes the book when a resting offer beats the vault", () => {
   const calls = planAction(
     { type: "buy", strike: 2_400, quantity: 3, limit: 0.05 },

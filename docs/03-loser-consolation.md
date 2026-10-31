@@ -129,6 +129,23 @@ collateralised so it cannot go insolvent, and uniquely well-shaped by a bounded
 payoff — at trade time we know the exact loss and the exact distance to the strike,
 which no sportsbook or perp venue can say.
 
+## What was built instead: hold to expiry, no fee
+
+After the redesign, the shipped answer to "what does the loser get" is not a refund at all —
+it is a **cheaper entry for a committed holder**:
+
+- A buyer can take the vault's **mid**, with no venue margin, by choosing *Hold to expiry*.
+- In exchange the ticket cannot be closed back to the pool, sold into a bid, or otherwise
+  left early. Settlement at expiry is unchanged.
+- The fee and the exit are the same option seen twice: the margin is what the venue charged
+  for the right to cut and run, so a holder who gives that up does not pay it.
+
+Why this and not the refund: at a 50 bps margin there is no float yield to fund a prize
+pool, and funding a lottery from the venue's cut would pay out several times what the venue
+earns. The held entry costs nothing to administer, cannot be farmed (there is no exit to
+farm), and is fully collateralised by construction. The arithmetic above stays in
+`core/src/consolation.rs` for the day there is float income to spend.
+
 ## What is now code
 
 `core/src/consolation.rs` implements the chosen shape in integers, with ten tests.

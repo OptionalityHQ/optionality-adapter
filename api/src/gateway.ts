@@ -195,6 +195,8 @@ export interface PositionRow {
   /** Which seats signed the price a finished ticket paid out on. */
   settleSources: string[];
   againstPool: boolean;
+  /** Held to expiry: no fee was charged and the ticket cannot be closed. */
+  held: boolean;
 }
 
 export interface SeriesInfo {
@@ -435,6 +437,7 @@ export function normalizePositions(raw: unknown, vaultAccount: string): Position
         // The contract itself is the maker of a vault ticket; no account can be
         // its own predecessor, so this identity cannot be forged by a user.
         againstPool: String(entry.maker ?? "") === vaultAccount,
+        held: entry.held === true,
       };
     });
 }
@@ -490,6 +493,9 @@ export interface LadderSide {
   bestOfferId: number | null;
   poolAsk: number | null;
   poolBid: number | null;
+  /** The mid the vault published, before its margin — the price a held ticket
+   * pays. Null when the venue has no live quote. */
+  poolMid: number | null;
   /** How old the venue's standing quote was when the contract answered, in
    * seconds. The vault trades at the price it published, so on a moving index
    * that price is a moment old by the time a click lands — the screen says how
@@ -554,6 +560,7 @@ export function mergeSide(
   // is not selling — which the screen has to say rather than round off to zero.
   const poolAsk = pool ? fromUnits(amount(pool.entryUnits)) : null;
   const poolBid = pool ? fromUnits(amount(pool.exitUnits)) : null;
+  const poolMid = pool ? fromUnits(amount(pool.midUnits)) : null;
   // What a buyer is charged: a person's offer if one is resting, otherwise the
   // vault's published price. The model's spread is only a chart line, and a
   // ladder that shows it as the ask shows a number the click will not fill at —
@@ -598,6 +605,7 @@ export function mergeSide(
     bestOfferId: bestOffer ? bestOffer.offerId : null,
     poolAsk,
     poolBid,
+    poolMid,
     poolQuoteAgeS: pool ? pool.ageNs / 1e9 : null,
     takeAsk: takeAsk ? takeAsk.price : null,
     takeAskFrom: takeAsk ? takeAsk.from : null,
@@ -751,14 +759,19 @@ export function buildPortfolio(
     // a person made is worth the best resting bid. Marking either with the
     // model's mid showed +$0.0168 unrealised on a ticket the next click sold
     // back for −$0.0081, and a button naming a price nobody has to pay.
-    const exitUnit = !live
+    // A held ticket has no exit at all, so it has no exit price and no PnL: the
+    // number would be one the holder cannot take, which is the whole reason the
+    // entry was free.
+    const exitUnit = !live || position.held
       ? null
       : position.againstPool
         ? (quote?.exitValue ?? null)
         : (quote?.bid ?? null);
     const expiry = expiryLabel(position.expiryNs, nowMs);
     const closeBlock =
-      position.side !== "long"
+      position.held
+        ? "held to expiry · no early close"
+        : position.side !== "long"
         ? "a short waits for the print"
         : position.settlement !== "open"
           ? `series ${position.settlement}`
@@ -795,6 +808,7 @@ export function buildPortfolio(
       settlement: position.settlement,
       fixedPrice: position.fixedPrice,
       settleSources: position.settleSources,
+      held: position.held,
       closable: closeBlock === null,
       closeBlock,
     };
