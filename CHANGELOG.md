@@ -5,6 +5,34 @@ that has never been deployed.
 
 ## 2026-10-31
 
+**Testing**
+
+- **A financial test programme, not more examples.** Property tests over the money math
+  (`core/tests/properties.rs`: exact fee splits, bounded payoffs, overflow edges), a
+  220-step randomized multi-user contract session that re-derives the whole balance sheet
+  after every operation, adversarial lifecycle tests (double settlement, void/fix
+  exclusivity, zero/overflow orders, the admin/venue matrix, reserved takers), Rust→TypeScript
+  trade vectors that make the planner spend against numbers Rust produced, and an adversarial
+  Chrome suite (`sim/suite.mts`) covering holds, refusals, origin attacks, partial fills,
+  custody and accessibility. **325 tests**, `docs/08-testing.md` says what each layer proves
+  and what it does not.
+
+**Fixed**
+
+- **A vault could write a ticket it could not settle.** `reserved` was net of the premium
+  while `can_write` compared it against `equity + premium`: the premium was counted twice,
+  so a 100-premium / 300-worst-case ticket fitted on 100 of equity and then failed to settle.
+  The reservation is now the whole worst case (`Σ max_payout ≤ equity`); LP withdrawals can
+  no longer remove the premium a payout needs. Capacity is honestly tighter.
+- **A multi-contract hold was funded for one contract.** The planner sent `mid + 1%` for
+  any size, so a two-contract hold reverted with *premium above the budget*.
+- **"Buy & hold" could become a book fill.** A cheaper resting offer took precedence over the
+  commitment the holder chose; the hold path now always takes the vault mid.
+- **A partial market fill was reported as a full one.** The message is now built from the
+  receipt's filled and unfilled quantities.
+- **The Hold toggle never reflected its state** (`aria-pressed` was only set for Post Only),
+  the toast was not a live region, and several controls had no label association.
+
 **Added**
 
 - Playwright end-to-end (`near-mvp/sim/e2e.mts`, `scripts/e2e.sh`): the real screen in the

@@ -131,6 +131,37 @@ test("a held buy pays the mid and asks the contract to hold it", () => {
   assert.notEqual(first(calls).args.max_total_premium, "52000", "the loaded entry is not what a held ticket pays");
 });
 
+test("a held buy pays the mid for every contract, not just the first", () => {
+  const calls = planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.06, hold: true }, context());
+  assert.equal(first(calls).method, "pool_buy_held");
+  assert.equal(first(calls).args.quantity, "3000000");
+  // One mid is 50,000 units. Three are 150,000, and the one percent of slack is
+  // over the whole ticket. Sending 50,500 for a three-contract hold would be a
+  // budget the contract refuses — the trade the screen offered would revert.
+  assert.equal(first(calls).args.max_total_premium, "151500");
+});
+
+test("a held ticket is refused a close before anything is signed", () => {
+  const held = normalizePositions([{ ...POSITION, held: true }], "vault.testnet") as PositionRow[];
+  assert.throws(
+    () =>
+      planAction(
+        { type: "close", strike: 2_400, ticket: 1, quantity: 3, limit: 0.045 },
+        context({ positions: held }),
+      ),
+    /bought to hold/,
+  );
+});
+
+test("a hold stays a hold even when the book is cheaper", () => {
+  const cheapBook = context({
+    side: sideOf({ takeAsk: 0.01, takeAskFrom: "book", bestOfferId: 0 }),
+  });
+  const calls = planAction({ type: "buy", strike: 2_400, quantity: 3, limit: 0.06, hold: true }, cheapBook);
+  assert.equal(first(calls).method, "pool_buy_held", "the book is another trade, not this one");
+  assert.equal(first(calls).args.max_total_premium, "151500");
+});
+
 test("a buy takes the book when a resting offer beats the vault", () => {
   const calls = planAction(
     { type: "buy", strike: 2_400, quantity: 3, limit: 0.05 },

@@ -75,7 +75,7 @@ near-mvp/scripts/e2e.sh --settle     # also holds a ticket to expiry and settles
 It clicks with Playwright's actionability checks (visible, stable, enabled, actually
 receives the event), fails on a console error or a failed request, checks that the smile
 canvas has pixels on it, measures the phone width, and leaves screenshots, a `trace.zip`
-you can replay, and a video of each journey — [journey-fast.mp4](../near-mvp/evidence/e2e/journey-fast.mp4)
+you can replay, and a video of each journey — [journey-fast.mp4](../near-mvp/evidence/e2e/journey-fast.mp4), and the adversarial pass in [journey-suite.mp4](../near-mvp/evidence/suite/journey-suite.mp4)
 and [journey-settle.mp4](../near-mvp/evidence/e2e/journey-settle.mp4).
 
 ## What is deliberately not here

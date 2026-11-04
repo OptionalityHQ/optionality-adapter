@@ -16,6 +16,7 @@ flowchart TB
     D5["5 · Red team<br/><i>what broke, and the fix</i>"]
     D6["6 · Gateway API<br/><i>the routes</i>"]
     D7["7 · Runbook<br/><i>boot, health, failure modes</i>"]
+    D8["8 · Testing<br/><i>what each layer proves</i>"]
   end
   D1 --> D4
   D1 --> D3
@@ -24,11 +25,14 @@ flowchart TB
   D2 --> D6
   D6 --> D7
   D4 -.->|"claims"| D5
+  D5 --> D8
+  D7 --> D8
 ```
 
 Read 1 for the product, 4 for how it is built, 2 and 6 for what executes and how the
-screen asks for it, 7 for how to run it, 5 for what has already gone wrong. Reference material lives under `reference/` and is never mixed
-into ours — it is other people's systems, studied rather than adopted.
+screen asks for it, 7 for how to run it, 5 for what has already gone wrong, and 8 for
+what the tests actually prove. Reference material lives under `reference/` and is never
+mixed into ours — it is other people's systems, studied rather than adopted.
 
 Decision records, the agent workflow and the Vietnamese drafts live in an `internal/`
 folder that is deliberately not committed; anything worth publishing is rewritten into
@@ -41,6 +45,10 @@ these docs rather than moved.
 | 2 | [On-chain integration](02-onchain-integration.md) | both lifecycles run against a real chain, with the encoding and gas traps |
 | 3 | [Loser consolation](03-loser-consolation.md) | the payout math, and the bound that keeps it unfarmable |
 | 4 | [Pool architecture](04-pool-architecture.md) | player-vs-pool: shared Rust crate, four vault buckets, six invariants, phase table |
+| 5 | [Red team](05-red-team.md) | what broke and how it was fixed |
+| 6 | [Gateway API](06-gateway-api.md) | every route the screen calls |
+| 7 | [Runbook](07-runbook.md) | boot, health, stop, failure modes |
+| 8 | [Testing](08-testing.md) | the seven layers, the bugs they found, and what is still unproven |
 
 Start at **4**, then **2**.
 

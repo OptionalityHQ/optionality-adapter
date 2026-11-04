@@ -53,7 +53,7 @@ Evidence: [ticket accessibility capture](../../evidence/rea/v2-ticket-hydrated.t
 
 Evidence: [RFQ capture](../../evidence/rea/v2-rfq-hydrated.txt), [portfolio capture](../../evidence/rea/v2-portfolio-hydrated.txt), [vault screenshot](../../evidence/rea/v2-vaults-hydrated.png), [fees screenshot](../../evidence/rea/v2-fees-hydrated.png).
 
-A welcome notification overlays the upper portion of several screenshots. The fee screenshot is viewport-sized; use the [full fee DOM text](../../evidence/browser/03-fees.json) for rows below the fold.
+A welcome notification overlays the upper portion of several screenshots. The fee screenshot is viewport-sized; use the [full fee DOM text](..../../evidence/MANIFEST.md#evidencebrowser03feesjson) for rows below the fold.
 
 ## Money and authorization flow
 
@@ -96,7 +96,7 @@ Sources: [login[https://docs.derive.xyz/authentication/session-login](https://do
 
 The documented RFQ sequence is `private/send_rfq` → `private/send_quote` → `private/execute_quote`. The initial RFQ is authenticated but unpriced/unsigned; maker and taker authorize the economic trade later. Packages support proportional partial fills.
 
-**Integration trap:** RFQ `min_total_cost` and `max_total_cost` filter quote selection. They are not automatically execution-price bounds. Validate the actual package and signed terms before execution. Source: [retained RFQ guide](../../evidence/interfaces/trading__rfq.md.txt).
+**Integration trap:** RFQ `min_total_cost` and `max_total_cost` filter quote selection. They are not automatically execution-price bounds. Validate the actual package and signed terms before execution. Source: [retained RFQ guide](..../../evidence/MANIFEST.md#evidenceinterfacestradingrfqmdtxt).
 
 ## Vaults: described mechanics versus product availability
 
@@ -117,7 +117,7 @@ Sources: [requests[https://docs.derive.xyz/vaults/deposits-withdrawals](https://
 
 Negative rebates are restricted to verified market makers. Tiers reference 28-day volume, volume share and staked DRV; the UI says tiers update hourly. The top options row combines a volume/share qualification with a staking requirement. Other rows use different combinations, so do not flatten the table into one universal rule.
 
-These percentages are **not sufficient to calculate a user's fee**: base definitions, option premium caps, RFQ discounts and account overrides matter. Nonzero spot fees in the current UI contradict an older “free” statement in the [retained fee guide](../../evidence/interfaces/integrators__trading__trading-fees.md.txt). Prefer a fresh quote and current account tier for execution.
+These percentages are **not sufficient to calculate a user's fee**: base definitions, option premium caps, RFQ discounts and account overrides matter. Nonzero spot fees in the current UI contradict an older “free” statement in the [retained fee guide](..../../evidence/MANIFEST.md#evidenceinterfacesintegratorstradingtradingfeesmdtxt). Prefer a fresh quote and current account tier for execution.
 
 **INFERENCE.** Derive's defensibility depends on liquidity and risk infrastructure in addition to UI quality. A smaller product should win on a specific workflow, distribution or policy control rather than claim novelty for RFQ or bounded payoffs. A subsidized demo maker proves settlement mechanics, not a functioning market.
 

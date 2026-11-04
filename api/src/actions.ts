@@ -180,6 +180,31 @@ function planBuy(context: Context, body: ActionBody): Call[] {
       },
     ];
   }
+  // Hold to expiry is a commitment, not a price preference: the ticket has to
+  // come from the vault at the mid, because only that ticket carries the no-exit
+  // rule the holder chose. A cheaper resting offer is a different trade — one
+  // the holder can still sell later — so it is not a substitute, even though it
+  // would cost less. `midUnits` is one contract's mid, while the contract's
+  // budget is over the whole ticket, so the ceiling is the mid times the size.
+  if (body.hold) {
+    const price = context.price;
+    if (price === null) {
+      throw new Error("the vault has no live price for this spread, so there is no held ticket to buy");
+    }
+    const mid = amount(price.midUnits) * toUnits(contracts) / SCALE;
+    return [
+      {
+        contract: "options",
+        method: "pool_buy_held",
+        args: {
+          series_id: series.seriesId,
+          quantity: toUnits(contracts).toString(),
+          max_total_premium: (mid + mid / 100n).toString(),
+        },
+        tgas: TGAS,
+      },
+    ];
+  }
   // Two things can sell this spread: a person resting an offer on chain, and the
   // vault at the price the venue published. `takeAsk` is the cheaper of the two,
   // and null only when neither has one — so a null is not a cheap fill, it is no
@@ -214,25 +239,6 @@ function planBuy(context: Context, body: ActionBody): Call[] {
   const price = context.price;
   if (price === null) {
     throw new Error("the vault is not writing this spread: the venue has no live price for it");
-  }
-  // Hold to expiry: the same purchase, at the mid and with no margin, in exchange
-  // for giving up both exits. The budget is the mid itself — there is no fee
-  // component to add, and a ceiling above the mid would only be a number the
-  // contract has already refused to charge.
-  if (body.hold) {
-    const mid = amount(price.midUnits);
-    return [
-      {
-        contract: "options",
-        method: "pool_buy_held",
-        args: {
-          series_id: series.seriesId,
-          quantity: toUnits(contracts).toString(),
-          max_total_premium: (mid + mid / 100n).toString(),
-        },
-        tgas: TGAS,
-      },
-    ];
   }
   return [
     {
@@ -286,6 +292,12 @@ function planSell(context: Context, body: ActionBody): Call[] {
       (row) => row.ticketId === ticket && row.side === "long" && row.againstPool,
     );
     if (held) {
+      // A held ticket gave up both exits at entry in exchange for the mid with
+      // no fee. The contract refuses this, so the planner refuses it in words
+      // rather than signing a transaction whose only outcome is a revert.
+      if (held.held) {
+        throw new Error("this ticket was bought to hold to expiry: it cannot be closed or sold");
+      }
       // The vault buys the ticket back at its own quote — there is no price to
       // send, and a cell that happens to be on screen is not the holder's
       // series, so the quote has to be that series' before anything is planned.

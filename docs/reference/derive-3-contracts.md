@@ -14,7 +14,7 @@ This is source inspection plus a pinned deployment snapshot, not an exploit asse
 | SpotVault | `0x2e7dF4fAf35a1599979C7E764444e112d936ec42` | `0x5D6d9D01a79625d5175D68A4B7Eb1fF390438245` |
 | WithdrawFactory | `0xFec48bBC648bd2284520d862Ec67fc68F709915e` | Standalone contract |
 
-Evidence: [pinned calls and EIP-1967 slots](../../evidence/contracts/rpc-state-pinned.json), [SDK deployment mapping](../../evidence/contracts/py-main-contracts.txt), [official contract list](../../evidence/contracts/contracts-doc.txt).
+Evidence: [pinned calls and EIP-1967 slots](..../../evidence/MANIFEST.md#evidencecontractsrpcstatepinnedjson), [SDK deployment mapping](..../../evidence/MANIFEST.md#evidencecontractspymaincontractstxt), [official contract list](..../../evidence/MANIFEST.md#evidencecontractscontractsdoctxt).
 
 Sourcify returned `exact_match` for the inspected ActionManager, VApp and Outbox implementations and WithdrawFactory, and `match` for SpotVault/proxy artifacts. These are verification-service results, not our local bytecode recompilation. Implementation metadata identifies Solidity 0.8.34 with optimizer disabled; proxy metadata identifies 0.8.35. No semantic V3.x release was mapped to these implementations.
 
@@ -30,21 +30,21 @@ One Sourcify VApp proxy-resolution field said `isProxy=false`; verified Transpar
 | SpotVault | `0x3FB79aafCD401CDD19e3d729241545955DDE0D48` |
 | WithdrawFactory | `0x6A8566c585903E4558A9BE722FFa55f173c719ef` |
 
-Use the [retained Sepolia mapping](../../evidence/contracts/py-sepolia-contracts.txt) as the implementation input and recheck before sending funds. Testnet API reads succeeded, but these testnet contracts were not used for transactions during research.
+Use the [retained Sepolia mapping](..../../evidence/MANIFEST.md#evidencecontractspysepoliacontractstxt) as the implementation input and recheck before sending funds. Testnet API reads succeeded, but these testnet contracts were not used for transactions during research.
 
 ## Contract responsibilities
 
 ### ActionManager: authenticated L1 intake is not the entire protocol
 
-[OnchainActionManager.sol](../../evidence/contracts/OnchainActionManager.sol) maintains separate SHA-256 public/admin accumulators. Generic actions commit sender, type and encoded data. Accumulator membership commits what was submitted; it does not, by itself, prove all guest-level administrative semantics were authorized.
+[OnchainActionManager.sol](..../../evidence/MANIFEST.md#evidencecontractsonchainactionmanagersol) maintains separate SHA-256 public/admin accumulators. Generic actions commit sender, type and encoded data. Accumulator membership commits what was submitted; it does not, by itself, prove all guest-level administrative semantics were authorized.
 
 The direct L1 withdrawal-action fee was **0.002 ETH** in source and the pinned RPC response. This is not a universal fee for every API withdrawal. `forceBatch` requests expedited batching; it does not skip authorization, validity proofs or outbox limits.
 
-Sources: [action append/withdraw logic:185](../../evidence/contracts/OnchainActionManager.sol#L185), [queue processing:262](../../evidence/contracts/OnchainActionManager.sol#L262), [pinned fee read](../../evidence/contracts/rpc-state-pinned.json).
+Sources: [action append/withdraw logic:185](..../../evidence/MANIFEST.md#evidencecontractsonchainactionmanagersol#L185), [queue processing:262](..../../evidence/MANIFEST.md#evidencecontractsonchainactionmanagersol#L262), [pinned fee read](..../../evidence/MANIFEST.md#evidencecontractsrpcstatepinnedjson).
 
 ### VApp: proof-bound state commitment
 
-[VerifiableApp.sol:241](../../evidence/contracts/VerifiableApp.sol#L241) exposes `submitBatch`. Its visible checks:
+[VerifiableApp.sol:241](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L241) exposes `submitBatch`. Its visible checks:
 
 1. Enforce the configured batch submitter, unless submission is open.
 2. Require the supplied old root to match the committed root.
@@ -57,7 +57,7 @@ Sources: [action append/withdraw logic:185](../../evidence/contracts/OnchainActi
 
 The public values comprise **16 ABI words**: old/new state roots; old/new public accumulator; old/new admin accumulator; withdrawal digest; minimum/maximum operation timestamps; previous/new DA height/hash; previous/new blob commitments; oldest header time.
 
-The key source line is [VerifiableApp.sol:311](../../evidence/contracts/VerifiableApp.sol#L311):
+The key source line is [VerifiableApp.sol:311](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L311):
 
 ```solidity
 ISP1Verifier(verifier).verifyProof(programVKey, publicValues, proofBytes);
@@ -73,11 +73,11 @@ The contract comments say the guest proves Celestia light-client/inclusion logic
 
 ### SpotVault: token custody
 
-[SpotVault.sol:30](../../evidence/contracts/SpotVault.sol#L30) holds assets and manages token allowances to the outbox. The owner can enable/disable those allowances. Custody correctness therefore depends on the vault, outbox, upgrade control and authorized token behavior, not only on proof verification.
+[SpotVault.sol:30](..../../evidence/MANIFEST.md#evidencecontractsspotvaultsol#L30) holds assets and manages token allowances to the outbox. The owner can enable/disable those allowances. Custody correctness therefore depends on the vault, outbox, upgrade control and authorized token behavior, not only on proof verification.
 
 ### WithdrawalOutbox: valid withdrawal does not mean immediate payment
 
-[WithdrawalOutbox.sol:396](../../evidence/contracts/WithdrawalOutbox.sol#L396) accepts withdrawal batches only from VApp. It deduplicates withdrawal IDs, attempts settlement and diverts failures to a deferred path.
+[WithdrawalOutbox.sol:396](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L396) accepts withdrawal batches only from VApp. It deduplicates withdrawal IDs, attempts settlement and diverts failures to a deferred path.
 
 ```mermaid
 flowchart TD
@@ -101,15 +101,15 @@ Important source-backed distinctions:
 - `deferredProcess` is owner-only, commitment checked, nonreentrant and unpaused; it is an unthrottled recovery path.
 - A consumed identifier means the withdrawal was handled/deduplicated, not necessarily paid in full.
 
-Sources: [roles:168](../../evidence/contracts/WithdrawalOutbox.sol#L168), [deduplication:407](../../evidence/contracts/WithdrawalOutbox.sol#L407), [settlement:424](../../evidence/contracts/WithdrawalOutbox.sol#L424), [queue processing:463](../../evidence/contracts/WithdrawalOutbox.sol#L463), [deferred processing:532](../../evidence/contracts/WithdrawalOutbox.sol#L532).
+Sources: [roles:168](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L168), [deduplication:407](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L407), [settlement:424](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L424), [queue processing:463](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L463), [deferred processing:532](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L532).
 
 At the snapshot the outbox was **unpaused**, guardian `0x682cd085ac63739a9f44e069e91bb6aa09a312e8`, minimum guardian refill interval **7,200 seconds**. These are observations, not perpetual guarantees.
 
 ### WithdrawFactory: additional cross-chain trust
 
-[WithdrawFactory.sol:132](../../evidence/contracts/WithdrawFactory.sol#L132) supports deterministic recipient/destination-chain escrows, configured OFT/CCIP routes and owner/keeper processing.
+[WithdrawFactory.sol:132](..../../evidence/MANIFEST.md#evidencecontractswithdrawfactorysol#L132) supports deterministic recipient/destination-chain escrows, configured OFT/CCIP routes and owner/keeper processing.
 
-[WithdrawFactory.sol:151](../../evidence/contracts/WithdrawFactory.sol#L151) contains an owner-only recovery path that sweeps escrow tokens and transfers them to the owner. This is a material trust boundary. A forwarded withdrawal adds escrow, bridge configuration, keeper liveness and owner recovery authority; it should not be described as identical to a direct L1 payout.
+[WithdrawFactory.sol:151](..../../evidence/MANIFEST.md#evidencecontractswithdrawfactorysol#L151) contains an owner-only recovery path that sweeps escrow tokens and transfers them to the owner. This is a material trust boundary. A forwarded withdrawal adds escrow, bridge configuration, keeper liveness and owner recovery authority; it should not be described as identical to a direct L1 payout.
 
 ## Governance snapshot and powers
 
@@ -122,27 +122,27 @@ The verified owner artifact is a SafeProxy. Pinned reads returned threshold **1*
 - `0x12d612647e8bcacec9148e477cade67bd07abc78`
 - `0x5f8d40613d49179376a200cc808d322f4331453a`
 
-Evidence: [Safe RPC calls](../../evidence/contracts/rpc-safe-pinned.json), [owner artifact](../../evidence/contracts/owner-0x62c004a89edbd7becbdf54e14779b7e7f5b390f7.json).
+Evidence: [Safe RPC calls](..../../evidence/MANIFEST.md#evidencecontractsrpcsafepinnedjson), [owner artifact](..../../evidence/MANIFEST.md#evidencecontractsowner0x62c004a89edbd7becbdf54e14779b7e7f5b390f7json).
 
 **Unknown:** whether these owners are themselves controlled by other contracts/organizations; Safe guards/modules; extra timelock enforcement; operational policies. The observed Safe configuration does not establish that one particular person can act unilaterally, but it does not substantiate the launch proposal's described 6-of-8/timelock arrangement either.
 
 | Owner power | Source | Why it matters |
 |---|---|---|
-| Replace verifier and program key | [VApp:148](../../evidence/contracts/VerifiableApp.sol#L148) | Changes what program/proof system is accepted |
-| Replace committed root, with expected-root check | [VApp:158](../../evidence/contracts/VerifiableApp.sol#L158) | Owner intervention can alter committed state outside normal batch advancement |
-| Replace program key alone | [VApp:166](../../evidence/contracts/VerifiableApp.sol#L166) | Proof validity is relative to the configured program |
-| Reset DA anchor | [VApp:179](../../evidence/contracts/VerifiableApp.sol#L179) | DA recovery/bootstrap includes privileged trust |
-| Set submitter and stall timeout | [VApp:189](../../evidence/contracts/VerifiableApp.sol#L189), [201](../../evidence/contracts/VerifiableApp.sol#L201) | Controls sequencing/settlement access and recovery timing |
-| Upgrade proxies | [ProxyAdmin ownership reads](../../evidence/contracts/rpc-state-pinned.json) | Current implementation checks are subject to upgrade governance |
-| Unpause/recover deferred payouts | [Outbox:168](../../evidence/contracts/WithdrawalOutbox.sol#L168), [532](../../evidence/contracts/WithdrawalOutbox.sol#L532) | Some recovery paths depend on privileged action |
+| Replace verifier and program key | [VApp:148](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L148) | Changes what program/proof system is accepted |
+| Replace committed root, with expected-root check | [VApp:158](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L158) | Owner intervention can alter committed state outside normal batch advancement |
+| Replace program key alone | [VApp:166](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L166) | Proof validity is relative to the configured program |
+| Reset DA anchor | [VApp:179](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L179) | DA recovery/bootstrap includes privileged trust |
+| Set submitter and stall timeout | [VApp:189](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L189), [201](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L201) | Controls sequencing/settlement access and recovery timing |
+| Upgrade proxies | [ProxyAdmin ownership reads](..../../evidence/MANIFEST.md#evidencecontractsrpcstatepinnedjson) | Current implementation checks are subject to upgrade governance |
+| Unpause/recover deferred payouts | [Outbox:168](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L168), [532](..../../evidence/MANIFEST.md#evidencecontractswithdrawaloutboxsol#L532) | Some recovery paths depend on privileged action |
 
 This is why “secured by validity proofs” must be qualified by upgrade, oracle and operational trust.
 
 ## Stalled-operator recovery: what it actually does
 
-The launch proposal described a two-week window. The deployed getter returned **2,419,200 seconds / 28 days**, matching initialization in [VApp:141](../../evidence/contracts/VerifiableApp.sol#L141).
+The launch proposal described a two-week window. The deployed getter returned **2,419,200 seconds / 28 days**, matching initialization in [VApp:141](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L141).
 
-[clearBatchSubmitter:217](../../evidence/contracts/VerifiableApp.sol#L217) requires the oldest eligible, unconsumed timestamped L1 action to have waited through that timeout. An empty queue is not a stall; pre-timestamp historical backlog does not itself arm the switch.
+[clearBatchSubmitter:217](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L217) requires the oldest eligible, unconsumed timestamped L1 action to have waited through that timeout. An empty queue is not a stall; pre-timestamp historical backlog does not itself arm the switch.
 
 On success it sets the exclusive submitter to zero, allowing someone else to submit a valid batch. It does **not**:
 

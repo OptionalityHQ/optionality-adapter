@@ -41,7 +41,7 @@ hardest exactly when the LP is least able to afford it.
 ## Our arithmetic, from our own simulator
 
 ETH 2,200/2,300 7-day put spread at spot 2,365.88, 44.8% vol, 3,000 runs,
-38,267 tickets (`evidence/sim/2026-10-28-market-report.txt`):
+38,267 tickets (`evidence/MANIFEST.md`):
 
 | fact | value |
 | --- | --- |

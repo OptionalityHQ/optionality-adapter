@@ -3,7 +3,7 @@
 Seven failures were found against the running local venue — the contract directly with a
 role key the gateway never uses, the gateway's HTTP surface, and the page in a real
 browser. Each was reproduced before it was fixed. Evidence:
-[`evidence/security/probes-2026-10-30.txt`](../near-mvp/evidence/security/probes-2026-10-30.txt),
+[`evidence/security/probes-2026-10-30.txt`](../evidence/MANIFEST.md#nearmvpevidencesecurityprobes20261030txt),
 [`near-mvp/evidence/journey/`](../near-mvp/evidence/journey).
 
 
@@ -74,7 +74,7 @@ signed. The shape that survives is that a taker does not send a price at all:
   for, so the screen and the planner read the number execution will use.
 - `pool_sweep` is venue-only too; it used to pay whoever asked.
 
-Live on the sandbox after the fix ([`evidence/security/probes-2026-10-30.txt`](../near-mvp/evidence/security/probes-2026-10-30.txt)):
+Live on the sandbox after the fix ([`evidence/security/probes-2026-10-30.txt`](../evidence/MANIFEST.md#nearmvpevidencesecurityprobes20261030txt)):
 a `pool_buy` that still sends `mid_units: 1` is filled at the vault's loaded entry, not
 for one unit; a close demanding 90.00 for a ticket whose exit is 0.09 reverts and the
 ticket stays with its buyer; a stranger calling `set_pool_quote` gets `only the venue`.
@@ -339,3 +339,23 @@ tests rather than re-read end to end.
 Nothing here was deployed, and no keys of yours were used: the sandbox accounts and
 their dev keys live in `near-mvp/data/chain-session.json`, which is gitignored and dies
 with the process.
+
+## 11. What the financial test programme found
+
+A later pass added property tests, a randomized multi-user contract session, adversarial
+lifecycle tests, Rust→TypeScript golden vectors and an adversarial Chrome suite (the
+programme is in [8 · Testing](08-testing.md)). It found five things hand-written examples
+had not:
+
+| # | finding | severity | where it was caught | regression |
+| --- | --- | --- | --- | --- |
+| 1 | `reserved` was net of the premium while `can_write` compared it against `equity + premium`, so the premium was counted twice; a ticket could be written that the vault could not settle | critical | `a_write_must_fit_the_equity_it_has_not_the_premium_it_is_about_to_collect` | the reservation is gross; `Σ max_payout ≤ equity`; the 220-step session settles every remaining ticket |
+| 2 | a hold for more than one contract was funded with one contract's mid (`mid + 1%`), so it reverted *premium above the budget* | major | the Chrome suite's two-contract hold, then the Rust vectors | `a held buy pays the mid for every contract`; the vector test runs 36 sizes |
+| 3 | with a cheaper resting offer, **Buy & hold** planned a book fill — a different trade that keeps its exit | major | the Chrome suite | `a hold stays a hold even when the book is cheaper` |
+| 4 | a partial market fill was announced as the requested size (*took 1000000x* after one offer) | medium | the Chrome suite's partial-fill step | the message comes from the receipt's filled/unfilled quantities |
+| 5 | the Hold toggle never set `aria-pressed`, the toast was not a live region, and several controls had no label | low | the Chrome suite's accessibility pass | template fixed; the suite fails on unnamed controls or a silent toast |
+
+Finding 1 also means the capacity line in §10 ("A reserve larger than the equity — the
+capacity invariant") described the intent, not the code, until this pass. The invariant
+now holds for the reason it was supposed to: the reservation is the whole payoff the vault
+must make, and the premium only lowers how much free equity the write consumes.

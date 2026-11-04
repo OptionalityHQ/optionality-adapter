@@ -22,7 +22,7 @@ dies with that process.
 lifecycle through it: one where the counterparty is a person resting a quote,
 one where it is the pool.
 Evidence: `evidence/chain/2026-10-29-onchain-demo.txt`,
-`evidence/chain/vault-lifecycle.txt`, `evidence/chain/ladder-listed.txt`.
+`evidence/MANIFEST.md`, `evidence/MANIFEST.md`.
 
 | Step | Contract call | What the chain said |
 | --- | --- | --- |
@@ -43,14 +43,14 @@ received 61.50.
 ### The same script against the vault
 
 The demo then runs the Player-vs-Pool lifecycle on a second series, which is what
-the product is now. Evidence: `evidence/chain/vault-lifecycle.txt`.
+the product is now. Evidence: `evidence/MANIFEST.md`.
 
 | Step | Contract call | What the chain said |
 | --- | --- | --- |
 | fund | `withdraw`, then `ft_transfer_call` with `"pool-deposit"` | 1,000,000 out to the LP's wallet, 1,000,000 into the pool, 1,000,000 shares at par |
 | quote | `set_pool_quote` 0.05 | the venue's price for the series: without it the vault writes nothing at any price |
 | write | `pool_buy` 3 with a 0.16 budget | premium **0.156** all-in, worst case **300**, margin inside it **0.006** · 2.3 Tgas |
-| state | `get_pool_state` | equity 1,000,000.150 · reserved 299.850 · free 999,700.300 · utilisation 0.02% · margin locked 0.006 |
+| state | `get_pool_state` | equity 1,000,000.150 · reserved 299.850 · free 999,700.300 · utilisation 0.02% · margin locked 0.006 (this transcript predates the gross-reservation fix: the same write now reserves the whole 300) |
 | greed | `pool_sweep` while the ticket is open | **0.000** — that margin is a void's refund source, not the venue's yet |
 | fix | `submit_observations` 2209.00 from two seats, below the low strike | the call expires worthless |
 | settle | `settle_ticket` | 0.00 to the buyer, 0.00 to the maker: the vault keeps the premium it collected |

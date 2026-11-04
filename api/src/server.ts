@@ -532,13 +532,32 @@ async function main(): Promise<void> {
             if (!["pool_close", "close_ticket", "settle_ticket"].includes(call.method)) return;
             tape.paid(you, Number(call.args.ticket_id), paidOf(results[index]?.value), call.method);
           });
+          // A market take can fill less than it asked for. The receipt carries
+          // the filled quantity, so the sentence has to be built from it: saying
+          // "took 1,000,000x" after one resting offer filled is a lie the trader
+          // would only discover in their position table.
+          const fillMessage = (): string | null => {
+            if (calls.length !== 1 || calls[0].method !== "fill_market_order") return null;
+            const value = results[0]?.value as
+              | { filled_quantity?: string | number; unfilled_quantity?: string | number }
+              | null;
+            if (!value || value.filled_quantity === undefined) return null;
+            const filled = fromUnits(amount(value.filled_quantity));
+            const unfilled = fromUnits(amount(value.unfilled_quantity ?? 0));
+            const asked = Number(parsed.quantity ?? 1);
+            return unfilled > 0
+              ? `took ${filled} of ${asked}x off the book · ${unfilled}x left unfilled · ${results.length} tx`
+              : `took ${filled}x off the book · ${results.length} tx`;
+          };
           json(200, {
             ok: true,
             // The planner's own sentence, in the trader's words rather than the
             // method name: "bought 2x from the pool at 0.0520", not "pool_buy".
-            message: calls.length
-              ? `${describe(calls, parsed as never, context as never)} · ${results.length} tx`
-              : "nothing to do",
+            message:
+              fillMessage() ??
+              (calls.length
+                ? `${describe(calls, parsed as never, context as never)} · ${results.length} tx`
+                : "nothing to do"),
             hashes: results.map((entry) => entry.hash),
             values: results.map((entry) => entry.value),
           });

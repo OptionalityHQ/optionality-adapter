@@ -56,12 +56,13 @@ restarted and the gateway is pointed at the old chain: restart it.
 
 ```bash
 bash scripts/test.sh          # 295 unit + integration tests, ~5 minutes, no venue needed
-bash scripts/e2e.sh           # Playwright against a running venue, ~90 s
+bash scripts/e2e.sh           # Playwright happy path against a running venue, ~90 s
 bash scripts/e2e.sh --settle  # also holds a ticket to expiry; use EXPIRY_HOURS=0.2
+npm run e2e:suite             # adversarial Chrome pass: refusals, partial fills, custody, a11y
 ```
 
 The e2e writes screenshots, a report, a `trace.zip` and a video of the journey to
-`evidence/e2e/`. If it fails, open the report first: it names the step, the text the screen
+`evidence/e2e/`; the suite writes the same to `evidence/suite/`. If it fails, open the report first: it names the step, the text the screen
 showed, and any console error.
 
 ## Common local chores

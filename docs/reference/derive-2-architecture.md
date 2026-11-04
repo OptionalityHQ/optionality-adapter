@@ -35,7 +35,7 @@ flowchart TB
 
 **SOURCE:** the VApp calls an SP1 verifier, binds public/admin action accumulators and withdrawal data, advances DA commitments and invokes the outbox. The Solidity supports this settlement boundary, but does not reveal the private matching implementation or prove the complete content of the Rust program.
 
-Sources: [retained introduction](../../evidence/contracts/introduction.txt), [V3 improvements](../../evidence/contracts/v3-improvements.txt), [launch proposal](https://forums.derive.xyz/t/dip-launch-derive-v3/322), [VerifiableApp.sol](../../evidence/contracts/VerifiableApp.sol#L241).
+Sources: [retained introduction](..../../evidence/MANIFEST.md#evidencecontractsintroductiontxt), [V3 improvements](..../../evidence/MANIFEST.md#evidencecontractsv3improvementstxt), [launch proposal](https://forums.derive.xyz/t/dip-launch-derive-v3/322), [VerifiableApp.sol](..../../evidence/MANIFEST.md#evidencecontractsverifiableappsol#L241).
 
 ## Component reference
 
@@ -59,18 +59,18 @@ Do not infer PostgreSQL, Redis, Kafka, Kubernetes or a backend programming langu
 
 ## Frontend reconstruction
 
-The [runtime manifest](../../evidence/browser/runtime-manifest.json) records deployed scripts and public resources. The UI displayed version `c75a0dd`; this is not a verified source commit. Captured deployment identifier: `dpl_5zcAYBQDGeVh1G9FjmDhj1eFptmy`.
+The [runtime manifest](..../../evidence/MANIFEST.md#evidencebrowserruntimemanifestjson) records deployed scripts and public resources. The UI displayed version `c75a0dd`; this is not a verified source commit. Captured deployment identifier: `dpl_5zcAYBQDGeVh1G9FjmDhj1eFptmy`.
 
 Focused searches of shipped bundles found:
 
 | Source location | Supported observation |
 |---|---|
-| [main-app bundle:1](../../evidence/browser/scripts/next_static_chunks_main-app-79935ae808343e1a.js#L1) | `wss://api.derive.xyz/v3/ws` and trading telemetry labels |
-| [request-helper bundle:1](../../evidence/browser/scripts/next_static_chunks_989-eaed449e91790940.js#L1) | Same-origin `/api/orderbook` routing, selected GET query parameters and JSON request bodies |
-| [order bundle:1](../../evidence/browser/scripts/next_static_chunks_7590-f2582e45a531328d.js#L1) | `public/order_quote` preflight and signed fields passed to `private/order` |
+| [main-app bundle:1](..../../evidence/MANIFEST.md#evidencebrowserscriptsnextstaticchunksmainapp79935ae808343e1ajs#L1) | `wss://api.derive.xyz/v3/ws` and trading telemetry labels |
+| [request-helper bundle:1](..../../evidence/MANIFEST.md#evidencebrowserscriptsnextstaticchunks989eaed449e91790940js#L1) | Same-origin `/api/orderbook` routing, selected GET query parameters and JSON request bodies |
+| [order bundle:1](..../../evidence/MANIFEST.md#evidencebrowserscriptsnextstaticchunks7590f2582e45a531328djs#L1) | `public/order_quote` preflight and signed fields passed to `private/order` |
 | [trade-page bundle:1](../../evidence/browser/scripts/next_static_chunks_app_%28app%29_trade_%5Bid%5D_page-6c2d15bad6e62a9a.js#L1) | `public/get_margin` usage |
-| [socket bundle:1](../../evidence/browser/scripts/next_static_chunks_1973-1ab8f7fe653a38b4.js#L1) | Trading request routing including order, RFQ and execute-quote methods |
-| [signing bundle:1](../../evidence/browser/scripts/next_static_chunks_247-a909744b80ac5f8d.js#L1) | `signTypedData` with primary type `Action`, returning signature/nonce/expiry/signer |
+| [socket bundle:1](..../../evidence/MANIFEST.md#evidencebrowserscriptsnextstaticchunks19731ab8f7fe653a38b4js#L1) | Trading request routing including order, RFQ and execute-quote methods |
+| [signing bundle:1](..../../evidence/MANIFEST.md#evidencebrowserscriptsnextstaticchunks247a909744b80ac5f8djs#L1) | `signTypedData` with primary type `Action`, returning signature/nonce/expiry/signer |
 
 These are static observations, not proof every route was exercised. REA parsed four selected bundles; supplemental text searches cover other named files. A generic JavaScript `.get("symbol")` is not evidence of a network endpoint.
 
@@ -91,7 +91,7 @@ Public runtime resources included WalletConnect discovery, Privy app configurati
 | Vault | Managed subaccount plus shares, shareholder requests, fee state and curator controls |
 | Withdrawal | Protocol authorization plus an independently tracked L1 payout lifecycle |
 
-Sources: [OpenAPI](../../evidence/interfaces/openapi.json), [selected schemas](../../evidence/interfaces/schema-selection.json), [additional schemas](../../evidence/interfaces/schema-selection-extra.json).
+Sources: [OpenAPI](..../../evidence/MANIFEST.md#evidenceinterfacesopenapijson), [selected schemas](..../../evidence/MANIFEST.md#evidenceinterfacesschemaselectionjson), [additional schemas](..../../evidence/MANIFEST.md#evidenceinterfacesschemaselectionextrajson).
 
 Treat decimal-string amounts as exact values. Protocol e18 encoding, ERC-20 underlying token decimals, price units and USD fee limits are different units. A protocol asset address is not necessarily the deposit token address.
 
@@ -109,7 +109,7 @@ The retained OpenAPI is version 3.1 and labels the API version `0.2.0`. Requests
 
 The browser proxy also exposes GET-style reads under `/api/orderbook/public/...`; it is a different frontend transport surface, not a contradiction of the direct POST tests.
 
-Evidence: [validation log](../../evidence/interfaces/public-validation.json), [production universes](../../evidence/interfaces/production-risk-universes.response.json), [testnet universes](../../evidence/interfaces/testnet-risk-universes.response.json), [signed feeds](../../evidence/interfaces/production-eth-signed-feeds.response.json).
+Evidence: [validation log](..../../evidence/MANIFEST.md#evidenceinterfacespublicvalidationjson), [production universes](..../../evidence/MANIFEST.md#evidenceinterfacesproductionriskuniversesresponsejson), [testnet universes](..../../evidence/MANIFEST.md#evidenceinterfacestestnetriskuniversesresponsejson), [signed feeds](..../../evidence/MANIFEST.md#evidenceinterfacesproductionethsignedfeedsresponsejson).
 
 ## Authentication and action signing
 
@@ -134,7 +134,7 @@ Order data binds protocol asset/sub-ID, price limit, size, fee bound, recipient 
 
 The owner can delegate to a session signer. Protocol-enforced scopes and server-only scopes such as IP/account metadata checks must be distinguished. Empty subaccount restrictions mean unrestricted subaccount coverage; revocation has a cooldown. Documentation also contains inconsistent nonce-window descriptions. Implementations need test vectors and account-specific scope tests rather than broad defaults.
 
-Sources: [action signing](../../evidence/interfaces/authentication__action-signing.md.txt), [session login](../../evidence/interfaces/authentication__session-login.md.txt), [session keys](../../evidence/interfaces/authentication__session-keys.md.txt), [access scopes](../../evidence/interfaces/authentication__access-scopes.md.txt).
+Sources: [action signing](..../../evidence/MANIFEST.md#evidenceinterfacesauthenticationactionsigningmdtxt), [session login](..../../evidence/MANIFEST.md#evidenceinterfacesauthenticationsessionloginmdtxt), [session keys](..../../evidence/MANIFEST.md#evidenceinterfacesauthenticationsessionkeysmdtxt), [access scopes](..../../evidence/MANIFEST.md#evidenceinterfacesauthenticationaccessscopesmdtxt).
 
 ## Order and batch lifecycle
 
@@ -160,7 +160,7 @@ sequenceDiagram
 
 This diagram expresses documented responsibilities, not a recovered internal call graph. Exact pre-matching/post-matching check placement is unknown.
 
-Order outcomes include resting, partial/full fill, cancellation, rejection and expiry. Documented order features include GTC, post-only, FOK/IOC, conditional orders and TWAP. Reduce-only is restricted to non-resting execution; atomic replace can guard against intervening filled amounts. Source: [order types](../../evidence/interfaces/trading__order-types.md.txt).
+Order outcomes include resting, partial/full fill, cancellation, rejection and expiry. Documented order features include GTC, post-only, FOK/IOC, conditional orders and TWAP. Reduce-only is restricted to non-resting execution; atomic replace can guard against intervening filled amounts. Source: [order types](..../../evidence/MANIFEST.md#evidenceinterfacestradingordertypesmdtxt).
 
 A related operation/batch progresses through:
 
@@ -169,7 +169,7 @@ Batching → Executing → Da → Proving → Settling → Settled
                      (stage-specific errors are possible)
 ```
 
-Track order ID, trade/operation ID and batch state separately. A timed-out client should reconcile by identity before retrying; an acknowledged order is not an exactly-once application guarantee. A processed escape action can have a skip reason and no payout. Sources: [transaction history](../../evidence/interfaces/api-reference__system__publicget_transaction.md.txt), [L1 action history](../../evidence/interfaces/api-reference__onchain-actions__publicget_onchain_action_history.md.txt).
+Track order ID, trade/operation ID and batch state separately. A timed-out client should reconcile by identity before retrying; an acknowledged order is not an exactly-once application guarantee. A processed escape action can have a skip reason and no payout. Sources: [transaction history](..../../evidence/MANIFEST.md#evidenceinterfacesapireferencesystempublicgettransactionmdtxt), [L1 action history](..../../evidence/MANIFEST.md#evidenceinterfacesapireferenceonchainactionspublicgetonchainactionhistorymdtxt).
 
 ## Risk, liquidation and settlement
 
@@ -179,7 +179,7 @@ Track order ID, trade/operation ID and batch state separately. A timed-out clien
 
 For PM2, each currency's worst scenario loss is computed independently and then aggregated. Favorable ETH performance does not automatically cancel BTC's worst-case loss. A public margin preview can return before/after initial and maintenance margin and trade validity, but it does not replace runtime checks.
 
-Sources: [standard margin](../../evidence/interfaces/standard-margin.md.txt), [portfolio margin](../../evidence/interfaces/portfolio-margin.md.txt), [managers/universes](../../evidence/interfaces/trading__managers-and-risk-universes.md.txt).
+Sources: [standard margin](..../../evidence/MANIFEST.md#evidenceinterfacesstandardmarginmdtxt), [portfolio margin](..../../evidence/MANIFEST.md#evidenceinterfacesportfoliomarginmdtxt), [managers/universes](..../../evidence/MANIFEST.md#evidenceinterfacestradingmanagersandriskuniversesmdtxt).
 
 ### Oracle
 
@@ -187,13 +187,13 @@ Current documentation names Block Scholes. Inputs include spot, forward, perp, S
 
 A real ETH feed response contained timestamps, deadlines, confidence and two signatures. We did not verify signatures or establish the signers' operational identities. ZK validity establishes compliance with the proved program and inputs; it does not establish that an external price represents economic reality.
 
-Source: [oracle documentation](../../evidence/interfaces/oracles.md.txt).
+Source: [oracle documentation](..../../evidence/MANIFEST.md#evidenceinterfacesoraclesmdtxt).
 
 ### Liquidation and backstop
 
 Documented liquidations auction proportional portfolio bundles. Solvent portfolios are offered at a discount; insolvent auctions can be funded by the universe's Security Module. Residual loss can be allocated within that universe, with temporary balance-operation constraints and phased margin effects. This is not an unconditional guarantee against losses.
 
-The `price_limit` description is inconsistent about whole-account versus filled-portion units. The older blanket “10% liquidation fee” was not verified as a current V3 constant. Sources: [liquidations](../../evidence/interfaces/liquidations.md.txt), [parameters](../../evidence/interfaces/liquidation-parameters.md.txt).
+The `price_limit` description is inconsistent about whole-account versus filled-portion units. The older blanket “10% liquidation fee” was not verified as a current V3 constant. Sources: [liquidations](..../../evidence/MANIFEST.md#evidenceinterfacesliquidationsmdtxt), [parameters](..../../evidence/MANIFEST.md#evidenceinterfacesliquidationparametersmdtxt).
 
 ### Expiry
 
@@ -205,7 +205,7 @@ elapsed = min(feed_timestamp, expiry) - window_start
 settlement = (spot_aggregate_latest - spot_aggregate_start) / elapsed
 ```
 
-Use seconds consistently and require a meaningful positive elapsed interval. Dividing a partially accumulated feed by a fixed 1,800 seconds is incorrect. An interim aggregate is not evidence the final expiry observation has arrived. Source: [settlement documentation](../../evidence/interfaces/settlement.md.txt).
+Use seconds consistently and require a meaningful positive elapsed interval. Dividing a partially accumulated feed by a fixed 1,800 seconds is incorrect. An interim aggregate is not evidence the final expiry observation has arrived. Source: [settlement documentation](..../../evidence/MANIFEST.md#evidenceinterfacessettlementmdtxt).
 
 ## Deposits, withdrawals and vault state
 
@@ -215,7 +215,7 @@ Use seconds consistently and require a meaningful positive elapsed interval. Div
 - **Vault requests:** FIFO shareholder queues with holds, signed curator mint/burn actions, nonce/user-action binding, slippage and margin constraints. Curators poll; the described queue has no dedicated WS channel.
 - **Vault fees:** share dilution, high-water mark and configured management/performance fees. Documented management settlement cap is 2.5% of NAV per settlement, not a universal annual fee. Zero outstanding shares permanently closes a vault per the winddown guide.
 
-Sources: [deposits](../../evidence/interfaces/getting-started__depositing.md.txt), [transfers](../../evidence/interfaces/trading__transfers-withdrawals.md.txt), [vault requests](../../evidence/interfaces/vaults__deposits-withdrawals.md.txt), [vault fees](../../evidence/interfaces/vaults__fees.md.txt), [winddowns](../../evidence/interfaces/vaults__winddowns.md.txt).
+Sources: [deposits](..../../evidence/MANIFEST.md#evidenceinterfacesgettingstarteddepositingmdtxt), [transfers](..../../evidence/MANIFEST.md#evidenceinterfacestradingtransferswithdrawalsmdtxt), [vault requests](..../../evidence/MANIFEST.md#evidenceinterfacesvaultsdepositswithdrawalsmdtxt), [vault fees](..../../evidence/MANIFEST.md#evidenceinterfacesvaultsfeesmdtxt), [winddowns](..../../evidence/MANIFEST.md#evidenceinterfacesvaultswinddownsmdtxt).
 
 ## Unresolved discrepancies
 
