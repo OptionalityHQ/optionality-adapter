@@ -15,6 +15,19 @@ It prints the two addresses you need (`screen http://127.0.0.1:8790`, `engine â€
 writes `logs/engine.log`, `logs/host.log`, `logs/gateway.log`. The sandbox lives and dies
 with the chain host: Ctrl-C or `stop` takes the chain and every transaction with it.
 
+For a **public testnet** deployment there is a separate script, and it is a different
+proposition: the account survives, so it costs NEAR and it needs a committee. Read
+[10 Â· Testnet](10-testnet.md) first, then:
+
+```bash
+VENUE=<your-account>.testnet bash scripts/deploy-testnet.sh         # plan only
+VENUE=<your-account>.testnet bash scripts/deploy-testnet.sh --yes   # deploys
+```
+
+Check the rent tab after any deploy or long run: `near view <options-id> get_storage_state`.
+A contract that cannot pay for its own state stops accepting writes, and the first write to
+fail will be a settlement somebody is waiting on.
+
 | Knob | Default | What it changes |
 |---|---|---|
 | `EXPIRY_HOURS` | `1` | the near tenor. `0.12` (~7 min) for a settle demo, `0.2` for a longer one |
