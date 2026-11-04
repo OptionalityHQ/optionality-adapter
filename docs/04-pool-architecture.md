@@ -151,7 +151,7 @@ Each phase lands with tests and is useful alone; nothing waits for the whole set
 | --- | --- | --- | --- |
 | 1 | `core::accounting` | contract's own tests pass against it, unchanged results | ✅ moved; the contract's copy deleted |
 | 2 | `surface::pricing` | matches the retired `sim/pricing.mjs` over a strike sweep, integer premium exact | ✅ 72 frozen vectors, 1e-9 tolerance, exact on the boundary |
-| 3 | `core::fees` + `core::pool` | capacity can never be exceeded, and custody is conserved under any fill sequence | ✅ 48 tests, incl. 11 property suites, a 500-step sequence and a randomized contract session |
+| 3 | `core::fees` + `core::pool` | capacity can never be exceeded, and custody is conserved under any fill sequence | ✅ 53 tests, incl. 11 property suites, a 500-step sequence, a randomized contract session and five storage-rent suites |
 | 4 | contract depends on `core` | book tests still green *and* a vault lifecycle runs on a real chain | ✅ 62 Rust tests then (125 now), 18 on-chain txs, custody conserved |
 | 5 | `engine` | the screen trades against a live pool at real prices, zero bots | ✅ 53 tests, live tape, 72 series listed from `/plan`, and a settlement that pays: one feed print fixes the whole grid and a ticket settles out of `equity` ([evidence](../evidence/MANIFEST.md#evidencechainsettlementlivetxt)) |
 | 6 | `api` + `web` in TS | the journey script passes end to end against the TS stack | ✅ gateway on 8790 with 79 tests, serving the page; the JS ledger it replaced is deleted and the screen reads only the gateway |

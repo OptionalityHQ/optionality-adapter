@@ -6,7 +6,7 @@ layered by *what each layer can prove*, and every layer runs in the same command
 gates a change:
 
 ```bash
-bash scripts/test.sh          # Rust + sandbox + TypeScript, 325 tests, ~3m30
+bash scripts/test.sh          # Rust + sandbox + TypeScript, 330 tests, ~3m30
 npm run e2e                   # the happy path in Chrome against the live venue
 npm run e2e:suite             # the edges, attacks and reconciliation, also Chrome
 ```
@@ -71,6 +71,18 @@ The tests were written to attack the system, and they found it. In severity orde
    toast was also not a live region and several controls had no label association. Fixed
    in the template; the browser suite now fails on unnamed buttons, unlabelled controls or
    a silent toast.
+
+6. **Critical, and only findable with a real chain — the contract did not pay for its own
+   state.** A NEAR contract pays rent per byte of state out of its own balance.
+   `bounded_options` had no storage accounting at all: every series, quote, offer, bid and
+   ticket it wrote was a permanent liability nobody was billed for. The sandbox hides this
+   completely, because the account is deleted along with the process. A testnet account
+   simply drains, and then every write fails — including the settlements traders are
+   waiting on. Found while writing `scripts/deploy-testnet.sh`, not by a test, which is the
+   honest description: the suite could not have found it, because the suite runs on a
+   sandbox. `create_series` and the quote paths are now `#[payable]`, overpayment is
+   refunded, and `get_storage_state` exposes the tab. See
+   [10 · Testnet](10-testnet.md).
 
 The full chain transcript for the reservation change is in the unit and property tests;
 the browser evidence is `near-mvp/evidence/suite/report.json` with a trace and

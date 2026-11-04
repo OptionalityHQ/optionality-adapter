@@ -17,6 +17,7 @@ flowchart TB
     D6["6 · Gateway API<br/><i>the routes</i>"]
     D7["7 · Runbook<br/><i>boot, health, failure modes</i>"]
     D8["8 · Testing<br/><i>what each layer proves</i>"]
+    D10["10 · Testnet<br/><i>what deploying takes</i>"]
   end
   D1 --> D4
   D1 --> D3
@@ -27,6 +28,8 @@ flowchart TB
   D4 -.->|"claims"| D5
   D5 --> D8
   D7 --> D8
+  D8 --> D10
+  D7 --> D10
 ```
 
 Read 1 for the product, 4 for how it is built, 2 and 6 for what executes and how the
@@ -49,6 +52,7 @@ these docs rather than moved.
 | 6 | [Gateway API](06-gateway-api.md) | every route the screen calls |
 | 7 | [Runbook](07-runbook.md) | boot, health, stop, failure modes |
 | 8 | [Testing](08-testing.md) | the seven layers, the bugs they found, and what is still unproven |
+| 10 | [Testnet](10-testnet.md) | what deploys today, the storage-rent fix, and the three gaps before a user can try it |
 
 Start at **4**, then **2**.
 

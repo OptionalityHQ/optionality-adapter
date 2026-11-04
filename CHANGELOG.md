@@ -3,9 +3,31 @@
 Newest first. Dates are the days the work landed, not release dates — this is a prototype
 that has never been deployed.
 
-## 2026-10-31
+## 2026-11-04
+
+**Deployment**
+
+- **The contract now pays its own rent.** A NEAR contract is billed per byte of state out
+  of its own balance, and `bounded_options` had no storage accounting: every series, quote,
+  offer, bid and ticket it wrote was a liability nobody was charged for. A sandbox deletes
+  the account with the process, so the suite could not have caught this; a testnet account
+  just drains, and then every write fails, settlements included. `create_series`,
+  `set_pool_quote` and `set_pool_quotes` are now `#[payable]` and charge for the state they
+  add — quotes only when the cell is new, because charging for a refresh taxes the venue
+  for staying fresh. Overpayment is refunded, anyone may `storage_deposit()` to top the
+  account up (a donation with a receipt: no shares, no claim), and `get_storage_state()`
+  reports the tab. Five tests pin the behaviour.
+- **`scripts/deploy-testnet.sh`** — the first deployment tooling in this repo. Eight steps
+  in dependency order, plan-only unless given `--yes`, and no secrets in the file it writes.
+- **[`docs/10-testnet.md`](docs/10-testnet.md)** — what deploys today, the rent fix, and
+  the three gaps (visitor signing, a tester faucet, seat keys that survive a restart) that
+  still separate "we could deploy" from "a user can try it".
 
 **Testing**
+
+- Storage-rent suites in the options contract: an unfunded series write is refused, exact
+  rent is enough, a re-quote costs nothing, the tab is internally consistent, a stranger's
+  deposit is receipted, and an overpaid series refunds the remainder. **330 tests**.
 
 - **A financial test programme, not more examples.** Property tests over the money math
   (`core/tests/properties.rs`: exact fee splits, bounded payoffs, overflow edges), a
@@ -14,7 +36,7 @@ that has never been deployed.
   exclusivity, zero/overflow orders, the admin/venue matrix, reserved takers), Rust→TypeScript
   trade vectors that make the planner spend against numbers Rust produced, and an adversarial
   Chrome suite (`sim/suite.mts`) covering holds, refusals, origin attacks, partial fills,
-  custody and accessibility. **325 tests**, `docs/08-testing.md` says what each layer proves
+  custody and accessibility. **330 tests**, `docs/08-testing.md` says what each layer proves
   and what it does not.
 
 **Fixed**
