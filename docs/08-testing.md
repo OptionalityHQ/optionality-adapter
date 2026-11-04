@@ -6,7 +6,7 @@ layered by *what each layer can prove*, and every layer runs in the same command
 gates a change:
 
 ```bash
-bash scripts/test.sh          # Rust + sandbox + TypeScript, 330 tests, ~3m30
+bash scripts/test.sh          # Rust + sandbox + TypeScript, 340 tests, ~3m30
 npm run e2e                   # the happy path in Chrome against the live venue
 npm run e2e:suite             # the edges, attacks and reconciliation, also Chrome
 ```
@@ -25,7 +25,7 @@ green chain run.
 | 4 | adversarial | contract and oracle unit tests | authorization, replay, stale quotes, double settlement, void/fix exclusivity, zero/overflow orders, FOK atomicity, reserved takers, held exits | that a clever caller finds a path we did not enumerate |
 | 5 | cross-language | [`core/tests/vectors.rs`](../near-mvp/core/tests/vectors.rs) → [`api/test/vectors.test.ts`](../near-mvp/api/test/vectors.test.ts) | the order the browser plans is fundable against numbers Rust produced, and never prices a ticket above its own payoff | that the screen displays those numbers correctly |
 | 6 | browser | [`sim/e2e.mts`](../near-mvp/sim/e2e.mts), [`sim/suite.mts`](../near-mvp/sim/suite.mts) | the real screen, real gateway and real sandbox chain agree: hold, close, rest/cancel, refusals, origin checks, custody, index, accessibility | concurrency, a public network, or browsers other than Chrome |
-| 7 | soak / load | not yet | — | — |
+| 7 | public testnet | [`scripts/testnet-smoke.mjs`](../near-mvp/scripts/testnet-smoke.mjs) | live deployment on NEAR testnet (`sable-knee.testnet`): real RPC, faucet mint, deposit, withdraw, series creation, batch quoting, market buy, market close, held buy, automated committee fixation, ticket settlement, and custody conservation | mainnet validators, high network concurrency |
 
 Layer 3 is the one that catches the class of bug examples miss: a path that is correct
 alone and wrong once another operation follows it. Layer 5 exists because the planner is
@@ -83,6 +83,14 @@ The tests were written to attack the system, and they found it. In severity orde
    sandbox. `create_series` and the quote paths are now `#[payable]`, overpayment is
    refunded, and `get_storage_state` exposes the tab. See
    [10 · Testnet](10-testnet.md).
+
+7. **Critical — the mock collateral token accepted 1 yoctoNEAR for storage.**
+   In NEP-141, `storage_deposit` registers an account. `mock-ft` accepted 1 yoctoNEAR
+   and inserted the account into a `LookupMap`. On NEAR, that write costs ~128 bytes
+   (~0.00128 NEAR), which was charged to the contract account. Every stranger who
+   registered drained the token's balance until all transfers reverted.
+   `mock-ft` now prices `ACCOUNT_STORAGE_BYTES = 128`, demands the exact rent, and
+   refunds any surplus. Four unit tests pin the behaviour.
 
 The full chain transcript for the reservation change is in the unit and property tests;
 the browser evidence is `near-mvp/evidence/suite/report.json` with a trace and

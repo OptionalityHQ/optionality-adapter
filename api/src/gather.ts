@@ -52,6 +52,7 @@ export interface Views {
    * is derived — the contract is the only record of which strikes exist — and one
    * read per series made every screen refresh hundreds of round trips. */
   getSeriesMany(seriesIds: number[]): Promise<Array<[number, unknown]>>;
+  getBooksMany?(seriesIds: number[]): Promise<Array<[number, unknown, unknown]>>;
   getBook(seriesId: number, limit: number): Promise<unknown>;
   getBids(seriesId: number, limit: number): Promise<unknown>;
   getPoolState(): Promise<unknown>;
@@ -227,9 +228,16 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
 
   const books: Record<number, ReturnType<typeof normalizeBook>> = {};
   const bids: Record<number, ReturnType<typeof normalizeBids>> = {};
-  for (const info of registry.list) {
-    books[info.seriesId] = normalizeBook(await input.views.getBook(info.seriesId, 50));
-    bids[info.seriesId] = normalizeBids(await input.views.getBids(info.seriesId, 50));
+  if (input.views.getBooksMany) {
+    for (let i = 0; i < registry.list.length; i += 32) {
+      const batch = await input.views.getBooksMany(registry.list.slice(i, i + 32).map((info) => info.seriesId));
+      for (const [id, offers, restingBids] of batch) { books[id] = normalizeBook(offers); bids[id] = normalizeBids(restingBids); }
+    }
+  } else {
+    for (const info of registry.list) {
+      books[info.seriesId] = normalizeBook(await input.views.getBook(info.seriesId, 50));
+      bids[info.seriesId] = normalizeBids(await input.views.getBids(info.seriesId, 50));
+    }
   }
 
   const marksByCell: Record<string, MarkSide> = {};

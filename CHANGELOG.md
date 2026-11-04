@@ -5,9 +5,33 @@ that has never been deployed.
 
 ## 2026-11-04
 
-**Deployment**
+**Live Public Testnet Deployment**
 
-- **The contract now pays its own rent.** A NEAR contract is billed per byte of state out
+- **Deployed on NEAR Testnet:** Deployed full protocol to NEAR testnet under `sable-knee.testnet`
+  ([`options.sable-knee.testnet`](https://testnet.nearblocks.io/address/options.sable-knee.testnet),
+  [`token.sable-knee.testnet`](https://testnet.nearblocks.io/address/token.sable-knee.testnet),
+  [`oracle.sable-knee.testnet`](https://testnet.nearblocks.io/address/oracle.sable-knee.testnet)).
+- **Browser wallet signing (NEAR Wallet Selector):** Integrated `@near-wallet-selector/core` and
+  `my-near-wallet`. In testnet mode, user trades are routed through `POST /plan` to generate unsigned
+  NEAR transaction envelopes, signed directly in MyNearWallet with zero gateway custody.
+- **Test collateral faucet (`POST /faucet`):** Automatically registers account storage and mints 1,000
+  test bUSD. Protected by IP rate limiting and a persistent daily journal (`FaucetLedger`) enforcing
+  a limit of 1 claim per account per UTC day and 100 daily claims.
+- **Durable oracle committee:** Key material for the 4 committee seats (`venue-index`, `kraken`, `okx`,
+  `pyth`) is persisted with `0600` permissions (`--key-file`), surviving process restarts. The testnet
+  operator verifies that local keys match registered on-chain oracle sources before quoting.
+- **Testnet operator daemon (`scripts/testnet.sh`):** Connects to deployed testnet contracts,
+  discovers ladder gaps, batches quotes with rent deposits, streams signed oracle ticks, and
+  automatically fixes expired series and settles tickets.
+- **Verified on-chain lifecycle (`scripts/testnet-smoke.mjs`):** Executed a complete live testnet lifecycle
+  (faucet mint, deposit, withdraw, series creation, quotes, pool buy, early close, held buy, automated
+  expiry fixing, ticket settlement, final withdrawal, custody verification) with receipts recorded in
+  `data/testnet-lifecycle.json`.
+- **Launch announcement document:** Published [`docs/11-launch-post.md`](docs/11-launch-post.md).
+
+**Fixed**
+
+- **The options contract now pays its own rent.** A NEAR contract is billed per byte of state out
   of its own balance, and `bounded_options` had no storage accounting: every series, quote,
   offer, bid and ticket it wrote was a liability nobody was charged for. A sandbox deletes
   the account with the process, so the suite could not have caught this; a testnet account
@@ -16,12 +40,16 @@ that has never been deployed.
   add — quotes only when the cell is new, because charging for a refresh taxes the venue
   for staying fresh. Overpayment is refunded, anyone may `storage_deposit()` to top the
   account up (a donation with a receipt: no shares, no claim), and `get_storage_state()`
-  reports the tab. Five tests pin the behaviour.
-- **`scripts/deploy-testnet.sh`** — the first deployment tooling in this repo. Eight steps
-  in dependency order, plan-only unless given `--yes`, and no secrets in the file it writes.
-- **[`docs/10-testnet.md`](docs/10-testnet.md)** — what deploys today, the rent fix, and
-  the three gaps (visitor signing, a tester faucet, seat keys that survive a restart) that
-  still separate "we could deploy" from "a user can try it".
+  reports the tab. Five unit tests pin the behaviour.
+- **The mock token now pays its own rent.** `mock-ft` previously accepted 1 yoctoNEAR for
+  `storage_deposit`, underfunding storage by 100% and draining the contract account on every
+  visitor registration. Fixed to price `ACCOUNT_STORAGE_BYTES = 128` with exact rent collection
+  and surplus refund. Four unit tests added.
+
+**Testing**
+
+- **340 automated tests, all passing** (`bash scripts/test.sh`): 258 Rust unit, property and integration
+  tests + 82 TypeScript tests. Plus automated public testnet smoke test.
 
 **Testing**
 

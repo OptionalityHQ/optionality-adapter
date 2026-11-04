@@ -68,7 +68,7 @@ restarted and the gateway is pointed at the old chain: restart it.
 ## Tests
 
 ```bash
-bash scripts/test.sh          # 295 unit + integration tests, ~5 minutes, no venue needed
+bash scripts/test.sh          # 340 unit + integration tests, ~3m30, no venue needed
 bash scripts/e2e.sh           # Playwright happy path against a running venue, ~90 s
 bash scripts/e2e.sh --settle  # also holds a ticket to expiry; use EXPIRY_HOURS=0.2
 npm run e2e:suite             # adversarial Chrome pass: refusals, partial fills, custody, a11y
@@ -87,4 +87,43 @@ curl -sX POST localhost:8790/demo/reset -H "origin: http://127.0.0.1:8790"
 # prove settlement does not need our engine
 pkill -f target/debug/engine      # the venue's seat goes stale; the other three settle
 ./target/debug/engine --port 8791 --assets ETH,BTC --expiry-hours 1 &   # bring it back
+```
+
+
+## Running on Public Testnet
+
+To operate against the live testnet deployment (`sable-knee.testnet`):
+
+```bash
+# 1. Build the frontend demo bundle
+node sim/build-demo.mjs
+
+# 2. Run the full testnet service stack (Engine + Testnet Operator + Gateway):
+NEAR_ADMIN_CREDENTIALS=~/.near-credentials/testnet/sable-knee.testnet.json scripts/testnet.sh
+
+# 3. In another terminal, run the automated testnet verification suite:
+NEAR_ADMIN_CREDENTIALS=~/.near-credentials/testnet/sable-knee.testnet.json node scripts/testnet-smoke.mjs --execute
+```
+
+The smoke test verifies every step against NEAR testnet and writes evidence to `data/testnet-lifecycle.json`:
+1. Mints 1,000 bUSD via `/faucet`.
+2. Deposits 500 bUSD via `ft_transfer_call`.
+3. Withdraws 50 bUSD.
+4. Buys ticket, closes early for refund.
+5. Buys held ticket, holds through expiry.
+6. Operator automatically fixes price with oracle committee.
+7. Settles ticket and checks custody conservation.
+
+### Viewing Testnet Contract State
+
+```bash
+# View options contract storage rent and balances:
+near view options.sable-knee.testnet get_storage_state --network-id testnet
+near view options.sable-knee.testnet get_pool_state --network-id testnet
+
+# View oracle committee sources and quorum:
+near view oracle.sable-knee.testnet get_sources --network-id testnet
+
+# View token metadata and supply:
+near view token.sable-knee.testnet ft_metadata --network-id testnet
 ```

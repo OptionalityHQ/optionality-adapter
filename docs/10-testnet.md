@@ -1,126 +1,146 @@
 # 10 · Testnet
 
-What it takes to put this in front of strangers, what is done, and what is not.
+What it takes to put this in front of strangers, how it is built, and what is verified on-chain.
 
-The short version: the contracts deploy, and the storage-rent bug that would
-have killed a public venue is fixed. Three things still stand between that and a
-URL you can hand to a user, and none of them are contract work.
+The short version: **the venue is live on NEAR testnet.** All three contracts are deployed,
+the storage-rent bug that would have killed a public venue is fixed on both the options contract
+and the mock token, the gateway serves the screen with browser wallet signing (MyNearWallet),
+a test collateral faucet is active, and a complete end-to-end lifecycle has been verified on
+the public testnet with on-chain receipts.
 
-## What deploys today
+## Live testnet deployment
+
+Deployed to NEAR testnet under the account `sable-knee.testnet` using `scripts/deploy-testnet.sh`:
+
+| Role | Contract Account | Responsibility |
+|---|---|---|
+| Venue Admin | `sable-knee.testnet` | sweeps earned margins, sets fee terms, owns the token & oracle |
+| Options Venue | `options.sable-knee.testnet` | player-vs-pool vault, books, held tickets, custody conservation |
+| Test Collateral | `token.sable-knee.testnet` | NEP-141 mock dollar (`bUSD`, 6 decimals), funded storage rent |
+| Settlement Oracle | `oracle.sable-knee.testnet` | 4-seat committee (`venue-index`, `kraken`, `okx`, `pyth`), quorum 2 |
+
+Configuration file: `data/testnet-session.json`.
+
+## How the testnet stack runs
 
 ```bash
-VENUE=<your-account>.testnet scripts/deploy-testnet.sh          # plan only
-VENUE=<your-account>.testnet scripts/deploy-testnet.sh --yes     # for real
+# 1. Start the complete testnet service stack:
+scripts/testnet.sh
 ```
 
-Eight steps, in dependency order:
+`scripts/testnet.sh` supervises three coordinated processes:
 
-| # | Step | Why it is in this order |
-|---|---|---|
-| 1 | build three wasm artifacts | `scripts/build.sh`, via `cargo near build` |
-| 2 | create `token.$VENUE`, `oracle.$VENUE`, `options.$VENUE` | the options contract is initialised with account ids, so they must exist |
-| 3 | deploy `mock-ft` | the token the venue escrows |
-| 4 | deploy `price-oracle` | the committee the venue asks before it pays |
-| 5 | deploy `bounded-options` | holds the token and oracle ids forever |
-| 6 | `set_venue`, `set_fee_terms(50, 100)` | until a venue is named, nobody may quote |
-| 7 | `add_source` × n, `set_quorum(2)` | **on the oracle.** Without seats nothing can settle |
-| 8 | write `data/testnet-session.json` | so the gateway knows where it points |
+1. **Pricing Engine (`target/debug/engine`):** ingests live price feeds (Coinbase, Binance, Bybit)
+   for ETH and BTC, derives the real-time median index, volatility smile and option grid, and serves
+   them on port `8791`.
+2. **Testnet Operator (`target/debug/chain-host --testnet-session`):**
+   - Loads durable signer keys from `data/testnet-seats/` (written with `0600` permissions)
+     and boots the 4 signer processes (`tools/oracle-signer`).
+   - Verifies the local seats match the registered public keys on `oracle.sable-knee.testnet`.
+   - Discovers unlisted expiry rungs from the pricing engine and creates them via `create_series`
+     (attaching state rent).
+   - Quotes the ladder cells in batches via `set_pool_quotes` as the venue account.
+   - Runs the background oracle relay: feeds signed observations into the oracle contract,
+     detects expired series, fixes the settlement price via committee consensus, and settles
+     matured tickets.
+3. **Gateway (`api/src/server.ts`):**
+   - Connects to testnet RPC (`https://rpc.testnet.fastnear.com`).
+   - Serves the frontend at `http://127.0.0.1:8790` with embedded NEAR Wallet Selector.
+   - Operates the test-token faucet `/faucet` (rates limited, daily ledger journaled to disk).
+   - Translates trade requests into unsigned transaction lists via `/plan`, leaving private
+     keys entirely inside the visitor's wallet.
 
-Step 7 is the one that still needs a human. The signer generates its key from a
-random seed at startup and never persists it
-(`tools/oracle-signer/src/main.rs:39`). In the sandbox that is correct — the
-seats and the chain die together. On testnet a seat whose key changes on restart
-is a registered source that can never sign again, so the deploy script refuses to
-invent one and skips the step with a warning instead.
+## The storage-rent architecture
 
-## The storage-rent fix
+NEAR charges rent per byte of contract state, paid from the contract's own balance.
+If a contract writes state without collecting rent, it drains its account and stops
+accepting transactions — including the settlements traders are waiting on.
 
-This was the real blocker and it is closed.
+Both contracts now price their own state:
 
-NEAR charges rent per byte of contract state, paid from the contract's own
-balance. `bounded_options` had no storage accounting at all: every series,
-quote, offer, bid and ticket it wrote was a permanent liability it never billed
-anyone for. A sandbox does not care, because the account is deleted with the
-process. A testnet account does not — it simply runs out, and then every write
-fails, including the settlements that traders are waiting on.
-
-The contract now prices its own state:
+### 1. Options contract (`contracts/bounded-options/src/lib.rs`)
 
 ```rust
-SERIES_STATE_BYTES = 344
-QUOTE_STATE_BYTES  =  88
-OFFER_STATE_BYTES  = 208
+SERIES_STATE_BYTES = 344  // permanent row, outlives settlement
+QUOTE_STATE_BYTES  =  88  // ladder quote map entry
+OFFER_STATE_BYTES  = 208  // order book entry
 ```
 
-- **`create_series` is `#[payable]`.** The caller who creates the row pays for
-  it. A series outlives its own settlement on purpose — a ticket that paid has
-  to be explainable years later — so it is the one row nobody gets for free.
-- **`set_pool_quote` / `set_pool_quotes` are `#[payable]`, and only charge for
-  cells that are new.** Re-quoting a series the venue already prices adds no
-  state. Charging for a refresh would tax the venue for staying fresh, and a
-  quote that is expensive to renew is a quote that goes stale.
-- **Overpayment is refunded** via `Promise::transfer`. A contract that quietly
-  keeps the remainder makes money from its callers' arithmetic.
-- **Anyone may call `storage_deposit()`** to top the account up. It is a
-  donation with a receipt: no shares, no claim, no right. That is what makes it
-  safe to let a stranger do it.
-- **`get_storage_state()`** reports `required_yocto`, `paid_yocto`,
-  `balance_yocto`, `funded`, `price_per_byte`, `usage_bytes` — so an operator can
-  see the tab before a user finds it as a failed transaction.
+- **`create_series` is `#[payable]`:** the creator pays for the permanent state row.
+- **`set_pool_quote` / `set_pool_quotes` are `#[payable]`:** only **new** ladder cells
+  are charged. Re-quoting existing cells adds no bytes and costs zero rent, preventing
+  refresh operations from taxing venue freshness.
+- **Overpayment refund:** any deposit beyond the required rent is immediately returned
+  to the caller via `Promise::new(predecessor).transfer(refund)`.
+- **Top-up donation:** `storage_deposit()` allows anyone to fund the venue's rent buffer.
+- **State transparency:** `get_storage_state()` reports required, paid, balance, price per
+  byte, and whether the venue is funded.
 
-The per-byte price is read from `env::storage_byte_cost()`, never hard-coded.
-The harnesses that call these methods attach the deposit themselves
-(`tools/chain-host/src/main.rs`, `integration-tests/tests/e2e.rs`); they
-over-attach and let the refund settle it, because a refund is a better failure
-than a refusal.
+### 2. Mock token contract (`contracts/mock-ft/src/lib.rs`)
 
-Five tests cover the behaviour:
+```rust
+ACCOUNT_STORAGE_BYTES = 128  // AccountId key + balance entry
+```
 
-| Test | What it pins |
-|---|---|
-| `a_series_must_be_paid_for_by_whoever_creates_it` | no deposit is refused, exact rent is enough |
-| `refreshing_a_quote_costs_nothing_after_the_first_time` | re-quoting adds no charge |
-| `the_storage_tab_reads_back_what_it_owes_and_what_it_has` | the view is internally consistent |
-| `anyone_can_put_money_on_the_storage_tab` | a stranger's deposit is accepted and receipted |
-| `an_overpaid_series_refunds_the_remainder` | only the rent is booked |
+- **`storage_deposit` requires actual rent:** registers the account only when attached
+  deposit covers `ACCOUNT_STORAGE_BYTES * env::storage_byte_cost()`.
+- **Refunds excess:** returning surplus yoctoNEAR to the caller.
+- **Re-registration protection:** refusing second deposits when an account is already registered.
 
-## What is still missing
+## Visitor signing and wallet integration
 
-Three gaps, in the order they block a real user.
+Visitors trade with their own testnet accounts:
 
-### 1. Visitors cannot sign
+1. **Browser wallet selector:** `api/src/wallet.ts` embeds `@near-wallet-selector/core`
+   and `@near-wallet-selector/my-near-wallet`.
+2. **Unsigned planning:** when a user clicks Buy, Hold, Sell, Deposit or Withdraw, the
+   page sends the action to `POST /plan`.
+3. **Zero custody:** the gateway computes the required contract calls and returns unsigned
+   function-call transaction envelopes with accurate gas and attached deposits.
+4. **Wallet confirmation:** the user approves the transaction in MyNearWallet, which
+   broadcasts directly to NEAR testnet.
 
-The gateway signs every transaction with the sandbox's dev keys, loaded from
-`data/chain-session.json`. `api/src/wallet.ts` contains a wallet-connect path but
-is dead code: `HAS_SANDBOX = true`, and `server.ts` never imports it.
+## Testnet collateral faucet
 
-So today one key acts for everybody. That is fine for a demo and wrong for a
-testnet, because a tester's trades would be signed as the operator. The fix is
-either a real wallet selector in the screen or a per-user keypair the gateway
-custodies and funds from a faucet — a product decision, not a contract one.
+To let testers trade without manual token distributions:
 
-### 2. Testers have no tokens
+- **Endpoint:** `POST /faucet`
+- **Allowance:** 1,000 test tokens (`bUSD`) per request.
+- **Rate limiting:** 1 claim per IP per 60 seconds.
+- **Daily ledger (`FaucetLedger`):** max 1 claim per account per UTC day, max 100 daily claims.
+  Persisted to `data/private/faucet.json` (`0600` permissions) across server restarts.
+- **Account validation:** verifies the account exists on NEAR testnet before expending operator
+  gas on `storage_deposit` and `mint`.
 
-Accounts are created with `worker.dev_create_account()` at boot. On testnet a
-tester needs the mock token before they can buy a ticket, and there is no
-faucet route. Options: a `mint` the gateway calls on signup, or a small faucet
-screen. The mock token's `mint` is owner-only, so this is a gateway change.
+## Verified on-chain lifecycle
 
-### 3. Seats do not survive a restart
+The full trading lifecycle has been verified against the live deployment using
+`scripts/testnet-smoke.mjs --execute`. Every transaction succeeded on NEAR testnet:
 
-Described above. The fix is to derive a seat's key from a persisted seed
-(a file or an env var per seat) instead of `random_seed()`, and to let the deploy
-script read those seeds. Until then step 7 needs hand-made key material and the
-venue can never settle after a committee restart.
+| Step | Method | Hash | On-Chain Effect |
+|---|---|---|---|
+| Faucet | `mint` | `CqS2i1vGZaQm3KJ9CW5XZnLrnUgFj3TmQ4WNsLsWU266` | 1,000 bUSD minted to visitor |
+| Deposit | `ft_transfer_call` | `HAjJn7ZtRY4yRtaqo7nUVgfkCSEp31F3Wy8Duu7REqAs` | 500 bUSD transferred to options contract |
+| Withdraw | `withdraw` | `9ZGTugMd99kqMExYKSvDyucLRLRvp1eqF4k8PBr8uqxf` | 50 bUSD withdrawn back to wallet |
+| Series | `create_series` | `4MXvVgsRY95PMz7PkC7qpRw7ijRwQRjuY5kkjNKccEyA` | Series #42 created (ETH 2375–2425 Call) |
+| Quote | `set_pool_quote` | `D63FfESzyH5xeaEpmVftEJSR3B1M96qkD9SszQaUwKfq` | Series #42 quoted at 25.00 bUSD mid |
+| Buy | `pool_buy` | `28TpGYdim7jkxTBmhuvUhNAdWPJWipM1uTA6BC9GnceT` | Ticket #2 bought from pool, worst-case reserved |
+| Close | `pool_close` | `A8dqwtNywcFj2beePiAeodVvQ7DocxQGd1dCDNaG1ynw` | Ticket #2 closed early for 24.75 bUSD |
+| Buy Held | `pool_buy_held` | `6Z1sB27dd4JEeQYPiGgKR9zUXMVfDaGiP9x7FmDyxE1G` | Ticket #3 bought with Hold toggle |
+| Expiry | *auto-fix* | committee consensus | Operator fixed series using `kraken`, `okx`, `venue-index` |
+| Settle | `settle_ticket` | `5cDEQh4AZsH5iwNrbCshU2xVH3s3eu4PfvFd72MsvkSm` | Ticket #3 settled: 50.00 bUSD credited to buyer |
+| Final Withdraw | `withdraw` | `DojCccppFqZ32ENpuDMBEcDwZLZgfQF6sRDqS8ZZgKCe` | Remaining balance withdrawn |
+| Verification | `custody` | on-chain assertion | Custody conserved: held = expected = 100,425.375 bUSD |
 
-## What a demo still needs, and does not have
+The machine-readable evidence is saved in `data/testnet-lifecycle.json`.
 
-| Need | Status |
-|---|---|
-| Public HTTPS endpoint for the gateway | `server.listen(PORT, "127.0.0.1")`, and an origin guard on `host`. Both must change |
-| Deploy target | no Dockerfile, no `fly.toml`, no CI. `scripts/deploy-testnet.sh` is the first deployment tooling in the repo |
-| Seeded liquidity | `maker-1` / `taker-1` are funded by sandbox mint. On testnet they need real balances |
-| E2E suite against a real network | `sim/e2e.mts` drives localhost only |
+## Production gates remaining for Mainnet
 
-None of these are hard. They are simply not done, and this document exists so
-that "we could deploy" and "a user can try it" are not confused.
+1. **Independent oracle operators:** the 4 committee seats run as separate processes with
+   isolated keys, but currently reside on the operator's machine. Production requires
+   geographically distributed, independently run oracle nodes.
+2. **Third-party security audit:** formal smart contract security review before handling
+   real-money collateral.
+3. **Real stablecoin integration:** replace `mock_ft` with genuine USDC / USDT NEP-141 tokens.
+4. **Public hosting:** deploying the gateway container to a cloud host (Fly.io / Render) with
+   SSL and DNS.

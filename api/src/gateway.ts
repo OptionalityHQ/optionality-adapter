@@ -45,7 +45,7 @@ export const EMPTY_HISTORY: SessionHistory = { points: [], spanS: 0, sampledEver
  * (JSON numbers) depending on which struct they sit in, and a `number` above
  * 2^53−1 is silently wrong. Everything crosses into `bigint` at this one seam.
  */
-export function amount(value: string | number | bigint | null | undefined): bigint {
+export function amount(value: unknown): bigint {
   if (value === null || value === undefined) return 0n;
   if (typeof value === "bigint") return value;
   if (typeof value === "number") {
@@ -54,7 +54,7 @@ export function amount(value: string | number | bigint | null | undefined): bigi
     }
     return BigInt(value);
   }
-  if (!/^\d+$/.test(value)) throw new RangeError(`amount "${value}" is not an integer`);
+  if (typeof value !== "string" || !/^\d+$/.test(value)) throw new RangeError(`amount "${value}" is not an integer`);
   return BigInt(value);
 }
 

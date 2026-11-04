@@ -11,6 +11,7 @@
  */
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
+import { accountId, walletTransactions, FaucetLedger } from "./testnet.ts";
 import { Chain } from "./chain.ts";
 import { type Asset, type Kind, type LadderSide, type PoolPrice, SCALE, Tape, amount, fromUnits, rejectSigning } from "./gateway.ts";
 import {
@@ -49,6 +50,14 @@ const DEMO_TOPUP = 5_000e6;
 
 /** This process's own record of the session: one sample a second, five minutes deep. */
 const history = new History();
+const visitorHistories = new Map<string, History>();
+function historyFor(account: string): History {
+  if (!visitorHistories.has(account)) {
+    if (visitorHistories.size >= 200) visitorHistories.delete(visitorHistories.keys().next().value!);
+    visitorHistories.set(account, new History());
+  }
+  return visitorHistories.get(account)!;
+}
 
 /** The reads `gather.ts` asks for, mapped onto the contract's own names. */
 function viewsFor(chain: Chain): Views {
@@ -59,6 +68,7 @@ function viewsFor(chain: Chain): Views {
     },
     getSeriesMany: async (seriesIds) =>
       (await chain.view("get_series_many", { series_ids: seriesIds })) as Array<[number, unknown]>,
+    ...(chain.session.network === "testnet" ? { getBooksMany: (seriesIds: number[]) => chain.view("get_books", { series_ids: seriesIds, limit: 20 }) as Promise<Array<[number, unknown, unknown]>> } : {}),
     getBook: (seriesId, limit) => chain.view("get_book", { series_id: seriesId, limit }),
     getBids: (seriesId, limit) => chain.view("get_bids", { series_id: seriesId, limit }),
     getPoolState: () => chain.view("get_pool_state"),
@@ -209,6 +219,15 @@ function pageFor(htmlPath: string): string {
   );
 }
 
+async function readBody(request: import("node:http").IncomingMessage): Promise<string> {
+  let body = "";
+  for await (const chunk of request) {
+    body += chunk;
+    if (Buffer.byteLength(body) > 16_384) throw new Error("request body is too large");
+  }
+  return body;
+}
+
 async function main(): Promise<void> {
   const session = JSON.parse(readFileSync(SESSION, "utf8")) as {
     contracts: { options: string; token: string };
@@ -216,13 +235,17 @@ async function main(): Promise<void> {
   };
   const chain = await Chain.connect(SESSION);
   const views = viewsFor(chain);
-  const you = chain.id("you");
+  const publicTestnet = chain.session.network === "testnet";
+  const you = publicTestnet ? chain.options : chain.id("you");
+  const faucet = publicTestnet && process.env.NEAR_ADMIN_CREDENTIALS ? new FaucetLedger("data/private/faucet.json") : null;
+  let faucetBusy = false;
+  const faucetRate = new Map<string, number>();
   const vault = session.contracts.options;
   // The tape reads the venue the only way a gateway can: by watching what the
   // chain holds. These are the sandbox's funded roles, not a bot roster.
   const tape = new Tape();
   tape.self = you;
-  const holders = Object.values(session.roles).map((role) => role.account);
+  const holders = Object.values(session.roles ?? {}).map((role) => role.account);
   console.log(`gateway    ${vault}`);
   console.log(`as         ${you}`);
   console.log(`engine     ${ENGINE}`);
@@ -257,7 +280,11 @@ async function main(): Promise<void> {
     strike: number,
     expiry: string,
     quantity: number,
+    visitor = you,
   ) => {
+    const positions = normalizePositions(await views.getPositions(visitor), vault);
+    const empty = { you: visitor, vault, priceScale: 1_000_000, seriesFor: () => null, side: null, price: null, positions };
+    if (!Number.isFinite(strike)) return empty;
     const pairs = await registryPairs(views);
     // The ladder for the expiry the click is about, not the nearest one: the two
     // are a week apart and the marks differ by the tenor.
@@ -267,7 +294,7 @@ async function main(): Promise<void> {
     // expiry, and a registry that quietly answers with a ladder a week away is a
     // click that fills at a price the trader never saw.
     const registry: Registry = registryForExpiry(pairs, wanted, asset, false);
-    if (registry.list.length === 0) throw new Error("that expiry is not listed on chain");
+    if (registry.all().length === 0) throw new Error("that expiry is not listed on chain");
     const marks = marksFromEngine(rows);
     const seriesId = registry.idFor(asset, kind, strike);
     const info = seriesId === null ? null : registry.info(seriesId);
@@ -294,7 +321,7 @@ async function main(): Promise<void> {
       price,
     );
     return {
-      you,
+      you: visitor,
       vault,
       priceScale: 1_000_000,
       seriesFor: () =>
@@ -312,7 +339,7 @@ async function main(): Promise<void> {
             },
       side,
       price,
-      positions: normalizePositions(await views.getPositions(you), vault),
+      positions: normalizePositions(await views.getPositions(visitor), vault),
     };
   };
 
@@ -320,6 +347,40 @@ async function main(): Promise<void> {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const json = (code: number, body: unknown) =>
       response.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+    if (url.pathname === "/config") return json(200, {
+      network: publicTestnet ? "testnet" : "sandbox", rpc: chain.session.rpc, contracts: chain.session.contracts,
+      faucet: Boolean(faucet), faucetAmount: 1000, faucetDailyClaims: 100,
+    });
+    if (url.pathname === "/wallet.js" || url.pathname === "/wallet.css") {
+      const css = url.pathname.endsWith(".css");
+      try { return response.writeHead(200, { "content-type": css ? "text/css" : "text/javascript", "cache-control": "no-store" }).end(readFileSync(`demo/wallet.${css ? "css" : "js"}`)); }
+      catch { return response.writeHead(404).end("wallet bundle missing; run node sim/build-demo.mjs"); }
+    }
+    if (url.pathname === "/faucet" && request.method === "POST") {
+      if (!faucet) return json(503, { ok: false, error: "test-token faucet is not enabled" });
+      const origin = request.headers.origin;
+      const allowed = arg("--public-origin", `http://${request.headers.host}`);
+      if (!origin || origin !== allowed) return json(403, { ok: false, error: "use the faucet from the product page" });
+      const ip = request.socket.remoteAddress ?? "unknown";
+      if (faucetBusy || Date.now() - (faucetRate.get(ip) ?? 0) < 60_000) return json(429, { ok: false, error: "please wait one minute before another claim" });
+      return void (async () => {
+        faucetBusy = true;
+        try {
+          const body = JSON.parse(await readBody(request));
+          const account = accountId(body.account);
+          faucetRate.set(ip, Date.now());
+          if (faucetRate.size > 1000) for (const [key, at] of faucetRate) if (Date.now() - at > 60_000) faucetRate.delete(key);
+          // Check existence before spending any operator NEAR. The token balance
+          // query alone cannot tell an unregistered account from a made-up one.
+          await chain.accountExists(account);
+          faucet.reserve(account);
+          await chain.call("admin", "storage_deposit", { account_id: account }, { contract: chain.token, deposit: "1280000000000000000000" });
+          const minted = await chain.call("admin", "mint", { account_id: account, amount: "1000000000" }, { contract: chain.token });
+          json(200, { ok: true, account, amount: 1000, hash: minted.hash, message: "1,000 test tokens are in your wallet. Deposit them into the venue to trade." });
+        } catch (error) { json(400, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
+        finally { faucetBusy = false; }
+      })();
+    }
     if (url.pathname.startsWith("/fonts/")) {
       // The page's own typefaces: one flat segment, no traversal, read before
       // any header is written so a missing file answers 404 instead of killing
@@ -391,11 +452,12 @@ async function main(): Promise<void> {
           const rows = engine?.rows ?? [];
           const spot = engine?.spot ?? null;
           const strikes = rows.map((row) => row.strike);
+          const visitor = publicTestnet && url.searchParams.has("account") ? accountId(url.searchParams.get("account")) : you;
           const state = await gatherState({
             asset: requestedAsset,
             expiry,
             strikes,
-            account: you,
+            account: visitor,
             vault,
             views,
             marks: marksFromEngine(rows),
@@ -404,7 +466,7 @@ async function main(): Promise<void> {
             strike,
             feed,
             tape,
-            history,
+            history: publicTestnet ? historyFor(visitor) : history,
             holders,
           });
           json(200, state);
@@ -430,6 +492,7 @@ async function main(): Promise<void> {
       })();
     }
     if (url.pathname === "/demo/reset" && request.method === "POST") {
+      if (publicTestnet) return json(403, { ok: false, error: "connect a wallet and use the test-token faucet" });
       // The demo account is funded from the sandbox's own mint, so a visitor who
       // has spent the opening balance can get back to testing without a restart.
       // Same origin guard as every other signing route.
@@ -474,28 +537,23 @@ async function main(): Promise<void> {
         }
       })();
     }
-    if (url.pathname === "/action" && request.method === "POST") {
+    if ((url.pathname === "/action" || url.pathname === "/plan") && request.method === "POST") {
+      const unsigned = url.pathname === "/plan";
+      if (publicTestnet && !unsigned) return json(403, { ok: false, error: "testnet actions must be signed in your wallet" });
       // Every action signs. Nothing that is not this page, on this machine,
       // gets to ask.
       const foreign = rejectSigning({
         host: request.headers.host,
         origin: request.headers.origin as string | undefined,
       });
-      if (foreign !== null) return json(403, { ok: false, error: foreign });
+      if (!unsigned && foreign !== null) return json(403, { ok: false, error: foreign });
       // The body arrives after this handler returns: waiting for `end` is the
       // only way to see the order at all. Reading it too early is how every
       // action silently arrives as `{}`.
-      const readBody = () =>
-        new Promise<string>((resolve) => {
-          let data = "";
-          request.on("data", (chunk) => {
-            data += chunk;
-          });
-          request.on("end", () => resolve(data));
-        });
       return void (async () => {
         try {
-          const parsed = JSON.parse((await readBody()) || "{}") as {
+          const parsed = JSON.parse((await readBody(request)) || "{}") as {
+            account?: string;
             type: string;
             asset?: string;
             kind?: string;
@@ -515,8 +573,13 @@ async function main(): Promise<void> {
             Number(parsed.strike),
             parsed.expiry ?? "",
             Number(parsed.quantity ?? 1),
+            unsigned ? accountId(parsed.account) : you,
           );
           const calls = planAction(parsed as never, context as never);
+          if (unsigned) return json(200, {
+            ok: true, transactions: walletTransactions(calls, accountId(parsed.account), chain.session.contracts),
+            message: calls.length ? describe(calls, parsed as never, context as never) : "nothing to do",
+          });
           const results = await run(calls);
           // What a run-off paid comes off the receipt, not out of this file. The
           // vault's own close answers with one number and `settle_ticket` with
@@ -569,7 +632,7 @@ async function main(): Promise<void> {
     return response.writeHead(404).end("not found");
   });
 
-  server.listen(PORT, "127.0.0.1", () => {
+  server.listen(PORT, arg("--host", "127.0.0.1"), () => {
     console.log(`listening  http://127.0.0.1:${PORT}  (engine at ${ENGINE})`);
   });
 }

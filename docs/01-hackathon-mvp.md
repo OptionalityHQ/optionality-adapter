@@ -2,7 +2,7 @@
 
 > **Ours.** Reference material on other venues is in [reference/](reference/) · index: [docs/README.md](README.md)
 
-**PROPOSED, with option A partly built.** Design decisions below are still proposals; option A now has local contract code, sandbox tests and a market simulator (see [the prototype](../near-mvp/README.md)). Nothing has been deployed, and no external integration has been transaction-tested. No particular hackathon, deadline or eligibility rule has been assumed.
+**BUILT, TESTNET-DEPLOYED, AND VERIFIED ON-CHAIN.** Option A is fully implemented across three Rust contracts (`bounded-options`, `mock-ft`, `price-oracle`), passing 340 automated tests, deployed to NEAR testnet under `sable-knee.testnet`, and verified end-to-end against live testnet RPC with on-chain receipts (see [10 · Testnet](10-testnet.md)).
 
 ## Recommendation
 
@@ -18,8 +18,8 @@ A first-stage implementation of option A now exists in [the NEAR prototype](../n
 | Acceptance-test suite: conservation at every quiescent point | Implemented, asserted in every flow |
 | Market economics study (premium vs collateral, maker ROI, slippage, fill rate) | Simulated locally against the same integer ledger, [report retained](../evidence/MANIFEST.md#evidencesim20261028marketreporttxt) |
 | Live BTC/ETH price ingestion (Binance + Coinbase + Bybit streams, median, dispersion, staleness) | Implemented for the demo and the economics study. It is one seat at the settlement committee, which now needs a quorum of independently signed prices before a ticket pays |
-| Derive-shaped trading screen (chain ladder, two-leg ticket, payoff/greeks, book, positions) | Built on that live feed, still not connected to a deployed contract |
-| Real oracle callback, funded makers, storage rent, audit, deployment | Not done |
+| Derive-shaped trading screen (chain ladder, two-leg ticket, payoff/greeks, book, positions) | Connected to live testnet gateway with NEAR Wallet Selector (MyNearWallet) and test token faucet |
+| Real oracle callback, funded makers, storage rent, deployment | Storage rent implemented on options and token; 4-seat oracle committee deployed with durable keys; contracts live at `sable-knee.testnet`; lifecycle verified on testnet |
 
 The simulator is not decorative: `testdata/accounting-vectors.json` is asserted by both the Rust tests and
 the JavaScript tests, and the demo's sweep-then-settle flow must reproduce the sandbox test's
