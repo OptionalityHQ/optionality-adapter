@@ -6,7 +6,7 @@ layered by *what each layer can prove*, and every layer runs in the same command
 gates a change:
 
 ```bash
-bash scripts/test.sh          # Rust + sandbox + TypeScript, 340 tests, ~3m30
+bash scripts/test.sh          # Rust + sandbox + TypeScript, 372 tests, ~3m30
 npm run e2e                   # the happy path in Chrome against the live venue
 npm run e2e:suite             # the edges, attacks and reconciliation, also Chrome
 ```
@@ -21,7 +21,7 @@ green chain run.
 |---|---|---|---|---|
 | 1 | examples | `core/src/*`, `contracts/*/src/lib.rs`, `api/test/*` | a named case behaves as documented | that the rule holds for a size nobody typed |
 | 2 | properties | [`core/tests/properties.rs`](../near-mvp/core/tests/properties.rs) | the arithmetic rules hold over thousands of deterministic inputs: fees split exactly, payoffs stay inside reservations, shares cannot over-redeem, overflow is refused | that a sequence of operations keeps the books straight |
-| 3 | stateful | `the_books_balance_through_a_random_multi_user_session` in the contract | after **every** operation of a random 220-step session (pool buys, held buys, pool closes, offers, bids, closes, settlements, a void, LP exits and sweeps), custody equals the tokens issued and every bucket reconciles | that the oracle's external inputs are honest |
+| 3 | stateful & private | `the_books_balance_through_a_random_multi_user_session` + [`private-ledger`](../near-mvp/private-ledger) + [`confidential-protocol`](../near-mvp/confidential-protocol) | after **every** operation of a random 220-step session custody equals tokens issued; 18 private ledger tests prove atomic subscriptions, signed copy mandates with loss floors, follower execution and Merkle snapshot recovery | that the oracle's external inputs are honest |
 | 4 | adversarial | contract and oracle unit tests | authorization, replay, stale quotes, double settlement, void/fix exclusivity, zero/overflow orders, FOK atomicity, reserved takers, held exits | that a clever caller finds a path we did not enumerate |
 | 5 | cross-language | [`core/tests/vectors.rs`](../near-mvp/core/tests/vectors.rs) → [`api/test/vectors.test.ts`](../near-mvp/api/test/vectors.test.ts) | the order the browser plans is fundable against numbers Rust produced, and never prices a ticket above its own payoff | that the screen displays those numbers correctly |
 | 6 | browser | [`sim/e2e.mts`](../near-mvp/sim/e2e.mts), [`sim/suite.mts`](../near-mvp/sim/suite.mts) | the real screen, real gateway and real sandbox chain agree: hold, close, rest/cancel, refusals, origin checks, custody, index, accessibility | concurrency, a public network, or browsers other than Chrome |

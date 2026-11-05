@@ -3,6 +3,40 @@
 Newest first. Dates are the days the work landed, not release dates — this is a prototype
 that has never been deployed.
 
+## 2026-11-05
+
+**Private Copy Trading & Expiry Chart**
+
+- **Visual Positions & Expiry Timeline Chart (`/chart`):** Added a native continuous timeline canvas
+  to the trading terminal. Maps time on the horizontal axis and underlying asset price on the
+  vertical axis. Renders listed option spreads as color-coded expiry walls (green for Call spreads,
+  red for Put spreads) spanning spread strike boundaries. Tracks user position badges with real-time
+  moneyness (`ITM`/`OTM`), intrinsic value calculations, and time-to-expiry countdowns.
+- **Interactive Click-to-Trade from Chart:** Clicking any expiry wall opens an order dialog, queries
+  the contract for live pool quotes via `GET /chart-quote`, and generates unsigned FunctionCall transactions
+  via `POST /plan` for direct one-click execution in MyNearWallet.
+- **Hardware-Attested TEE Capability Probe (OutLayer):** Built and deployed a WebAssembly component
+  (`tools/confidential-worker`) to FastFS ([`wasm hash 0ff283...`](https://test.fastfs.io/sable-knee.testnet/outlayer.testnet/0ff283fb61333a1adacc99e23147426287a5195b82667a93c3b1020e62f45c3c.wasm)),
+  executed on NEAR testnet ([`tx 6atRSizseGRViNshcrYipt3oBmi8uwetYxZRxAgoHNc1`](https://testnet.nearblocks.io/txns/6atRSizseGRViNshcrYipt3oBmi8uwetYxZRxAgoHNc1)),
+  and cryptographically verified hardware attestation proofs against Intel SGX roots (`outlayer-verify`).
+- **Private Copy Trading Ledger Engine (`near-mvp/private-ledger`):** Implemented an isolated,
+  high-performance private state machine (18 tests) for confidential options trading, atomic
+  subscription payments, private trade journals, signed follower copy mandates with enforced loss floors,
+  and replay-protected snapshot commitments against finalized roots.
+- **Padded Transport Protocol (`near-mvp/confidential-protocol`):** Implemented constant-size
+  encrypted request/reply transport (4 tests) with ChaCha20-Poly1305 and X25519 key exchange to
+  eliminate side-channel packet length analysis.
+- **Shielded Funding Preflight (Defuse Intents SDK):** Verified server-only advanced confidential
+  dry quoting for shared Intents balances using `@defuse-protocol/intents-sdk`, ensuring clean
+  separation between public wallet addresses and private trading balances.
+- **Documentation Suite Expansion:** Published [`docs/11-private-copy-trading-and-chart.md`](docs/11-private-copy-trading-and-chart.md)
+  and updated [`docs/12-launch-post.md`](docs/12-launch-post.md).
+
+**Testing**
+
+- **372 automated tests, all passing** (`bash scripts/test.sh`): 280 Rust tests (unit, proptest,
+  integration, stateful fuzzing, and private ledger) + 92 TypeScript tests.
+
 ## 2026-11-04
 
 **Live Public Testnet Deployment**
@@ -27,7 +61,7 @@ that has never been deployed.
   (faucet mint, deposit, withdraw, series creation, quotes, pool buy, early close, held buy, automated
   expiry fixing, ticket settlement, final withdrawal, custody verification) with receipts recorded in
   `data/testnet-lifecycle.json`.
-- **Launch announcement document:** Published [`docs/11-launch-post.md`](docs/11-launch-post.md).
+- **Launch announcement document:** Published [`docs/12-launch-post.md`](docs/12-launch-post.md).
 
 **Fixed**
 

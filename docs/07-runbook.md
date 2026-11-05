@@ -68,7 +68,7 @@ restarted and the gateway is pointed at the old chain: restart it.
 ## Tests
 
 ```bash
-bash scripts/test.sh          # 340 unit + integration tests, ~3m30, no venue needed
+bash scripts/test.sh          # 372 unit, property, integration & private ledger tests, ~3m30, no venue needed
 bash scripts/e2e.sh           # Playwright happy path against a running venue, ~90 s
 bash scripts/e2e.sh --settle  # also holds a ticket to expiry; use EXPIRY_HOURS=0.2
 npm run e2e:suite             # adversarial Chrome pass: refusals, partial fills, custody, a11y

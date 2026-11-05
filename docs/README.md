@@ -18,7 +18,8 @@ flowchart TB
     D7["7 · Runbook<br/><i>boot, health, failure modes</i>"]
     D8["8 · Testing<br/><i>what each layer proves</i>"]
     D10["10 · Testnet<br/><i>what deploying takes</i>"]
-    D11["11 · Launch Post<br/><i>submission & announcement</i>"]
+    D11["11 · Private Copy Trading & Chart<br/><i>TEE, mandates & timeline</i>"]
+    D12["12 · Launch Post<br/><i>submission & announcement</i>"]
   end
   D1 --> D4
   D1 --> D3
@@ -32,12 +33,15 @@ flowchart TB
   D8 --> D10
   D7 --> D10
   D10 --> D11
+  D11 --> D12
 ```
 
 Read 1 for the product, 4 for how it is built, 2 and 6 for what executes and how the
-screen asks for it, 7 for how to run it, 5 for what has already gone wrong, and 8 for
-what the tests actually prove. Reference material lives under `reference/` and is never
-mixed into ours — it is other people's systems, studied rather than adopted.
+screen asks for it, 7 for how to run it, 5 for what has already gone wrong, 8 for
+what the tests actually prove, 10 for testnet operations, 11 for private copy trading
+and the timeline chart, and 12 for the full submission launch post. Reference material
+lives under `reference/` and is never mixed into ours — it is other people's systems,
+studied rather than adopted.
 
 Decision records, the agent workflow and the Vietnamese drafts live in an `internal/`
 folder that is deliberately not committed; anything worth publishing is rewritten into
@@ -55,7 +59,8 @@ these docs rather than moved.
 | 7 | [Runbook](07-runbook.md) | boot, health, stop, failure modes |
 | 8 | [Testing](08-testing.md) | the seven layers, the bugs they found, and what is still unproven |
 | 10 | [Testnet](10-testnet.md) | live testnet deployment, storage-rent economics, and verified on-chain lifecycle |
-| 11 | [Launch Post](11-launch-post.md) | public announcement, architecture overview, testnet explorer links, and demo instructions |
+| 11 | [Private Copy Trading & Chart](11-private-copy-trading-and-chart.md) | TEE architecture, OutLayer hardware attestation, private ledger, and visual timeline chart |
+| 12 | [Launch Post](12-launch-post.md) | public announcement, architecture overview, testnet explorer links, and demo instructions |
 
 Start at **4**, then **2**.
 

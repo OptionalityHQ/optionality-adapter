@@ -26,7 +26,7 @@ import {
 import { History } from "./history.ts";
 import { projectSmile } from "./smile.ts";
 import { type Call, describe, planAction } from "./actions.ts";
-import { marksFromEngine, mergeSide, normalizeBids, normalizeBook, normalizePool, normalizePrices, normalizePositions } from "./gateway.ts";
+import { marksFromEngine, mergeSide, normalizeBids, normalizeBook, normalizePool, normalizePrices, normalizePositions, normalizeSeries } from "./gateway.ts";
 
 const arg = (name: string, fallback: string): string => {
   const argv = process.argv;
@@ -61,6 +61,7 @@ function historyFor(account: string): History {
 
 /** The reads `gather.ts` asks for, mapped onto the contract's own names. */
 function viewsFor(chain: Chain): Views {
+  let batchBooksSupported = true;
   return {
     async seriesIds() {
       const stats = (await chain.view("stats")) as { series_count: number };
@@ -68,7 +69,18 @@ function viewsFor(chain: Chain): Views {
     },
     getSeriesMany: async (seriesIds) =>
       (await chain.view("get_series_many", { series_ids: seriesIds })) as Array<[number, unknown]>,
-    ...(chain.session.network === "testnet" ? { getBooksMany: (seriesIds: number[]) => chain.view("get_books", { series_ids: seriesIds, limit: 20 }) as Promise<Array<[number, unknown, unknown]>> } : {}),
+    ...(chain.session.network === "testnet" ? { getBooksMany: async (seriesIds: number[]): Promise<Array<[number, unknown, unknown]>> => {
+      if (batchBooksSupported) {
+        try { return await chain.view("get_books", { series_ids: seriesIds, limit: 20 }) as Array<[number, unknown, unknown]>; }
+        catch (error) {
+          if (!/method.*not.*found|MethodNotFound/i.test(String(error))) throw error;
+          batchBooksSupported = false;
+        }
+      }
+      const books: Array<[number, unknown, unknown]> = [];
+      for (const id of seriesIds) books.push([id, await chain.view("get_book", { series_id: id, limit: 20 }), await chain.view("get_bids", { series_id: id, limit: 20 })]);
+      return books;
+    } } : {}),
     getBook: (seriesId, limit) => chain.view("get_book", { series_id: seriesId, limit }),
     getBids: (seriesId, limit) => chain.view("get_bids", { series_id: seriesId, limit }),
     getPoolState: () => chain.view("get_pool_state"),
@@ -347,13 +359,36 @@ async function main(): Promise<void> {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const json = (code: number, body: unknown) =>
       response.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+    if (url.pathname === "/chart-quote") {
+      return void (async () => {
+        try {
+          const id = Number(url.searchParams.get("series"));
+          const quantity = Number(url.searchParams.get("quantity"));
+          if (!Number.isSafeInteger(id) || id < 0 || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10000) return json(400, { error: "invalid series or contract quantity" });
+          const prices = normalizePrices(await views.getPoolPrices([id], (BigInt(quantity) * SCALE).toString()));
+          const price = prices.get(id);
+          if (!price || price.entryUnits == null) return json(200, { available: false });
+          json(200, { available: true, premium: Number(amount(price.entryUnits)) / 1e6, at: Date.now() });
+        } catch (error) { json(503, { error: error instanceof Error ? error.message : "quote unavailable" }); }
+      })();
+    }
+    if (url.pathname === "/chart-series") {
+      return void (async () => {
+        try {
+          const asset = url.searchParams.get("asset") === "BTC" ? "BTC" : "ETH";
+          const pairs = await registryPairs(views);
+          const series = pairs.map(([id, row]) => normalizeSeries(id, row)).filter((row) => row && row.asset === asset);
+          json(200, { series, at: Date.now() });
+        } catch (error) { json(503, { error: error instanceof Error ? error.message : "series unavailable" }); }
+      })();
+    }
     if (url.pathname === "/config") return json(200, {
       network: publicTestnet ? "testnet" : "sandbox", rpc: chain.session.rpc, contracts: chain.session.contracts,
       faucet: Boolean(faucet), faucetAmount: 1000, faucetDailyClaims: 100,
     });
-    if (url.pathname === "/wallet.js" || url.pathname === "/wallet.css") {
+    if (["/wallet.js", "/wallet.css", "/positions-chart.js"].includes(url.pathname)) {
       const css = url.pathname.endsWith(".css");
-      try { return response.writeHead(200, { "content-type": css ? "text/css" : "text/javascript", "cache-control": "no-store" }).end(readFileSync(`demo/wallet.${css ? "css" : "js"}`)); }
+      try { return response.writeHead(200, { "content-type": css ? "text/css" : "text/javascript", "cache-control": "no-store" }).end(readFileSync(`demo/${url.pathname.slice(1)}`)); }
       catch { return response.writeHead(404).end("wallet bundle missing; run node sim/build-demo.mjs"); }
     }
     if (url.pathname === "/faucet" && request.method === "POST") {
