@@ -10,8 +10,11 @@
  * The chain client is `chain.ts`: signing and JSON-RPC, no product rules.
  */
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { accountId, walletTransactions, FaucetLedger } from "./testnet.ts";
+import { fetchCandles, fetchMarketStats } from "./candles.ts";
+import { serveMedia } from "./media.ts";
+import { getLeaderboard, getUserMandates, createOrUpdateMandate, revokeMandate, getCopyJournal } from "./copy-trading.ts";
 import { Chain } from "./chain.ts";
 import { type Asset, type Kind, type LadderSide, type PoolPrice, SCALE, Tape, amount, fromUnits, rejectSigning } from "./gateway.ts";
 import {
@@ -38,7 +41,8 @@ const PORT = Number(arg("--port", "8790"));
 const ENGINE = arg("--engine", "http://127.0.0.1:8787");
 const SESSION = arg("--session", "data/chain-session.json");
 const DEMO = arg("--demo", "demo/index.html");
-const STREAM_MS = Number(arg("--stream-ms", "700"));
+const LANDING = arg("--landing", "demo/landing.html");
+const STREAM_MS = Number(arg("--stream-ms", "180"));
 
 /**
  * The demo account's floor and top-up, in the token's micro-units: 1,000 and 5,000
@@ -262,6 +266,59 @@ async function main(): Promise<void> {
   console.log(`as         ${you}`);
   console.log(`engine     ${ENGINE}`);
 
+  const PRESENCE_FILE = "data/active-presence.json";
+  let activeStreams = 0;
+  let lastUserActivity = Date.now();
+
+  const touchPresence = (active = true): void => {
+    try {
+      const isUserActive = active && (activeStreams > 0 || Date.now() - lastUserActivity < 90_000);
+      writeFileSync(
+        PRESENCE_FILE,
+        JSON.stringify({
+          active: isUserActive,
+          streams: activeStreams,
+          updated_at: Date.now(),
+        }),
+      );
+    } catch {}
+  };
+
+  touchPresence(false);
+  const presenceTimer = setInterval(() => {
+    touchPresence(activeStreams > 0 || Date.now() - lastUserActivity < 90_000);
+  }, 10_000);
+  presenceTimer.unref();
+
+  // Rolling sub-second tick history per asset (only sampled while visitors are active).
+  const tickBuffers: Record<Asset, Array<{ time: number; price: number }>> = {
+    ETH: [],
+    BTC: [],
+  };
+  const recordTick = (asset: Asset, price: number, atMs = Date.now()) => {
+    if (!Number.isFinite(price) || price <= 0) return;
+    const buf = tickBuffers[asset];
+    const last = buf[buf.length - 1];
+    if (last && atMs - last.time < 90 && Math.abs(last.price - price) < 1e-8) return;
+    buf.push({ time: atMs, price });
+    if (buf.length > 720) buf.splice(0, buf.length - 720);
+  };
+  const tickSampler = setInterval(() => {
+    if (activeStreams <= 0 && Date.now() - lastUserActivity >= 90_000) return;
+    void (async () => {
+      const feed = (await feedFromEngine()) as {
+        assets?: Record<string, { median?: number }>;
+      } | null;
+      if (!feed?.assets) return;
+      const now = Date.now();
+      for (const a of ["ETH", "BTC"] as const) {
+        const median = Number(feed.assets[a]?.median);
+        if (Number.isFinite(median) && median > 0) recordTick(a, median, now);
+      }
+    })();
+  }, 180);
+  tickSampler.unref();
+
   const run = async (calls: Call[]): Promise<Array<{ hash: string; value: unknown }>> => {
     const out: Array<{ hash: string; value: unknown }> = [];
     for (const call of calls) {
@@ -357,8 +414,16 @@ async function main(): Promise<void> {
 
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (url.pathname !== "/health" && url.pathname !== "/presence") {
+      lastUserActivity = Date.now();
+      touchPresence(true);
+    }
     const json = (code: number, body: unknown) =>
       response.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+    if (url.pathname === "/presence") {
+      const active = activeStreams > 0 || Date.now() - lastUserActivity < 90_000;
+      return json(200, { active, streams: activeStreams, updated_at: Date.now() });
+    }
     if (url.pathname === "/chart-quote") {
       return void (async () => {
         try {
@@ -380,6 +445,71 @@ async function main(): Promise<void> {
           const series = pairs.map(([id, row]) => normalizeSeries(id, row)).filter((row) => row && row.asset === asset);
           json(200, { series, at: Date.now() });
         } catch (error) { json(503, { error: error instanceof Error ? error.message : "series unavailable" }); }
+      })();
+    }
+    if (url.pathname === "/chart-candles") {
+      return void (async () => {
+        try {
+          const asset = url.searchParams.get("asset") === "BTC" ? "BTC" : "ETH";
+          const interval = url.searchParams.get("interval") ?? "1m";
+          const limit = Number(url.searchParams.get("limit")) || 60;
+          const end = url.searchParams.has("end") ? Number(url.searchParams.get("end")) : undefined;
+          if (end !== undefined && (!Number.isFinite(end) || end <= 0)) return json(400, { error: "invalid history end timestamp" });
+          const candles = await fetchCandles(asset, interval, limit, null, end);
+          json(200, { candles, asset, interval, at: Date.now() });
+        } catch (error) { json(503, { error: error instanceof Error ? error.message : "candles unavailable" }); }
+      })();
+    }
+    if (url.pathname === "/chart-ticks") {
+      return void (async () => {
+        try {
+          const asset: Asset = url.searchParams.get("asset") === "BTC" ? "BTC" : "ETH";
+          if (tickBuffers[asset].length === 0) {
+            // Seed from 1s candles if tick buffer just woke up
+            const recent = await fetchCandles(asset, "1s", 90);
+            for (const c of recent) recordTick(asset, c.close, c.time);
+          }
+          const feed = (await feedFromEngine()) as { assets?: Record<string, { median?: number }> } | null;
+          const liveSpot = Number(feed?.assets?.[asset]?.median);
+          if (Number.isFinite(liveSpot) && liveSpot > 0) recordTick(asset, liveSpot, Date.now());
+          json(200, { ticks: tickBuffers[asset], asset, at: Date.now() });
+        } catch (error) { json(503, { error: error instanceof Error ? error.message : "ticks unavailable" }); }
+      })();
+    }
+    if (url.pathname === "/chart-stats") {
+      return void (async () => {
+        try {
+          const asset: Asset = url.searchParams.get("asset") === "BTC" ? "BTC" : "ETH";
+          const stats = await fetchMarketStats(asset);
+          json(200, { stats, asset, at: Date.now() });
+        } catch (error) { json(503, { error: error instanceof Error ? error.message : "stats unavailable" }); }
+      })();
+    }
+    if (url.pathname === "/leaderboard") {
+      return json(200, { leaders: getLeaderboard(url.searchParams.get("asset") ?? undefined), at: Date.now() });
+    }
+    if (url.pathname === "/copy-mandates") {
+      const acct = url.searchParams.get("account") || you;
+      return json(200, { mandates: getUserMandates(acct), journal: getCopyJournal(acct), at: Date.now() });
+    }
+    if (url.pathname === "/copy-mandate" && request.method === "POST") {
+      return void (async () => {
+        try {
+          const body = JSON.parse(await readBody(request));
+          const acct = body.account ? accountId(body.account) : you;
+          const mandate = createOrUpdateMandate(acct, body);
+          json(200, { ok: true, mandate });
+        } catch (error) { json(400, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
+      })();
+    }
+    if (url.pathname === "/copy-mandate/revoke" && request.method === "POST") {
+      return void (async () => {
+        try {
+          const body = JSON.parse(await readBody(request));
+          const acct = body.account ? accountId(body.account) : you;
+          const success = revokeMandate(acct, body.profileId);
+          json(200, { ok: success });
+        } catch (error) { json(400, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
       })();
     }
     if (url.pathname === "/config") return json(200, {
@@ -433,14 +563,36 @@ async function main(): Promise<void> {
         .writeHead(200, { "content-type": "font/woff2", "cache-control": "no-store" })
         .end(bytes);
     }
+    if (url.pathname.startsWith("/media/")) {
+      return serveMedia(request, response, "demo/media", url.pathname.slice("/media/".length));
+    }
+    if (url.pathname.startsWith("/images/")) {
+      const name = url.pathname.slice("/images/".length);
+      if (!/^[\w][\w.-]*$/.test(name)) return response.writeHead(400).end();
+      try {
+        const bytes = readFileSync(`demo/images/${name}`);
+        const type = name.endsWith(".webp") ? "image/webp" : name.endsWith(".png") ? "image/png" : "image/jpeg";
+        return response.writeHead(200, { "content-type": type, "cache-control": "public, max-age=86400" }).end(bytes);
+      } catch {
+        return response.writeHead(404).end();
+      }
+    }
     if (url.pathname === "/health") return json(200, { ok: true, contract: vault, engine: ENGINE });
-    if (url.pathname === "/" || url.pathname === "/index.html") {
+    if (url.pathname === "/" || url.pathname === "/landing") {
+      const html = existsSync(LANDING) ? readFileSync(LANDING, "utf8") : pageFor(DEMO);
+      return response
+        .writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+        .end(html);
+    }
+    if (["/app", "/trade", "/chart", "/leaderboard", "/copy", "/copy-trading", "/index.html"].includes(url.pathname)) {
       // `no-store` so a rebuilt page cannot hide behind a browser cache.
       return response
         .writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
         .end(pageFor(DEMO));
     }
     if (url.pathname === "/stream") {
+      activeStreams++;
+      touchPresence(true);
       const asset = (url.searchParams.get("asset") === "BTC" ? "BTC" : "ETH") as Asset;
       response.writeHead(200, {
         "content-type": "text/event-stream",
@@ -448,15 +600,20 @@ async function main(): Promise<void> {
         connection: "keep-alive",
       });
       const push = async () => {
-        const [feed, engine] = await Promise.all([feedFromEngine(), engineRows(asset).catch(() => null)]);
-        if (feed === null || engine === null) return;
+        const feed = (await feedFromEngine()) as { assets?: Record<string, { median?: number }> } | null;
+        if (feed === null) return;
+        const median = Number(feed.assets?.[asset]?.median);
+        const spotVal = Number.isFinite(median) && median > 0 ? median : (await engineRows(asset).catch(() => null))?.spot ?? null;
+        if (spotVal === null) return;
+        recordTick(asset, spotVal, Date.now());
         // The index, the tape and the counters — not prices. A frame that
         // carried its own quote would be a second number for the same cell, and
         // `/state` is the one read the ticket is priced from.
         response.write(
           `data: ${JSON.stringify({
             index: feed,
-            spot: engine.spot,
+            spot: spotVal,
+            atMs: Date.now(),
             tape: tape.rows.slice(0, 8),
             flow: { prints: tape.prints, realised: tape.realised },
           })}\n\n`,
@@ -464,7 +621,11 @@ async function main(): Promise<void> {
       };
       const timer = setInterval(() => void push(), STREAM_MS);
       void push();
-      request.on("close", () => clearInterval(timer));
+      request.on("close", () => {
+        activeStreams = Math.max(0, activeStreams - 1);
+        touchPresence(activeStreams > 0 || Date.now() - lastUserActivity < 90_000);
+        clearInterval(timer);
+      });
       return;
     }
     if (url.pathname === "/state") {
