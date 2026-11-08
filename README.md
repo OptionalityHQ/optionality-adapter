@@ -1,17 +1,17 @@
 <div align="center">
 
-<img src="./docs/assets/banner.svg" alt="Optionality Adapter Banner" width="100%" />
+<img src="./docs/assets/banner.png" alt="Optionality Adapter Banner" width="100%" />
 
 <br />
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-ESM-3178C6?style=flat-square&logo=typescript)](https://github.com/OptionalityHQ/adapter)
+[![TypeScript](https://img.shields.io/badge/TypeScript-ESM-3178C6?style=flat-square&logo=typescript)](https://github.com/OptionalityHQ/optionality-adapter)
 [![MCP Server](https://img.shields.io/badge/MCP-Agent_Ready-c6f24e?style=flat-square)](./mcp)
 [![NEAR Intents](https://img.shields.io/badge/1Click_Intents-Ed25519_Verified-5fc39c?style=flat-square)](./api/src/confidential-intents.ts)
-[![Tests](https://img.shields.io/badge/Adapter_Tests-96%2F96_Passing-success?style=flat-square)](https://github.com/OptionalityHQ/adapter)
+[![Tests](https://img.shields.io/badge/Adapter_Tests-96%2F96_Passing-success?style=flat-square)](https://github.com/OptionalityHQ/optionality-adapter)
 
 **NEAR RPC Gateway Adapter, Per-Wallet Subaccount Isolation, 1Click/Intents Confidential Funding & MCP Server for Optionality**
 
-[Live Gateway](https://optionality.pro) · [Protocol Docs](https://optionality.pro/docs) · [Semantic Ontology](./docs/ONTOLOGY.md) · [Core Repo](https://github.com/OptionalityHQ/core) · [Interface Repo](https://github.com/OptionalityHQ/interface)
+[Live Gateway](https://optionality.pro) · [Protocol Docs](https://optionality.pro/docs) · [Semantic Ontology](./docs/ONTOLOGY.md) · [Core Repo](https://github.com/OptionalityHQ/optionality-core) · [Interface Repo](https://github.com/OptionalityHQ/optionality-interface)
 
 </div>
 
@@ -21,18 +21,18 @@
 
 Agents and trading interfaces can read raw blockchain RPC responses, but reliability gates derivative execution: a quote or position mark is worse than useless if it mixes expiries, leaks wallet state across sessions, or accepts an unverified funding payload.
 
-**Optionality Adapter** (`OptionalityHQ/adapter`) is the semantic and transport layer between [Optionality Core](https://github.com/OptionalityHQ/core) (NEAR smart contracts + Rust pricing engine) and any human or AI consumer ([Optionality Interface](https://github.com/OptionalityHQ/interface), CLI scripts, or MCP-compatible AI agents).
+**Optionality Adapter** (`OptionalityHQ/optionality-adapter`) is the semantic and transport layer between [Optionality Core](https://github.com/OptionalityHQ/optionality-core) (NEAR smart contracts + Rust pricing engine) and any human or AI consumer ([Optionality Interface](https://github.com/OptionalityHQ/optionality-interface), CLI scripts, or MCP-compatible AI agents).
 
 It enables developers and agents to:
 
-- **Ground** — Aggregate raw NEAR contract views (`get_series`, `get_book`, `get_bids`, `get_positions`) and Rust engine marks into a single certified state payload (`GET /state`) where every number names its provenance.
-- **Isolate** — Automatically provision a dedicated on-chain NEAR subaccount (`w-<slug>-<hash>.<admin>`) per connected wallet so balances, open positions, and trade histories are strictly isolated.
-- **Plan & Sign** — Build human-readable, slippage-bounded transaction plans for both non-custodial browser wallets (`POST /plan`) and sandbox execution (`POST /action`).
-- **Verify Confidential Funding** — Cryptographically verify Ed25519 provider signatures on 1Click / NEAR Intents shielded funding quotes before admitting copy-trading mandates.
-- **Expose via MCP** — Serve live option chains, volatility smiles, spread quotes, and unsigned NEAR transaction payloads to any AI agent harness over the Model Context Protocol (`mcp/index.mjs`).
+- **Ground**: Aggregate raw NEAR contract views (`get_series`, `get_book`, `get_bids`, `get_positions`) and Rust engine marks into a single certified state payload (`GET /state`) where every number names its provenance.
+- **Isolate**: Automatically provision a dedicated on-chain NEAR subaccount (`w-<slug>-<hash>.<admin>`) per connected wallet so balances, open positions, and trade histories are strictly isolated.
+- **Plan & Sign**: Build human-readable, slippage-bounded transaction plans for both non-custodial browser wallets (`POST /plan`) and sandbox execution (`POST /action`).
+- **Verify Confidential Funding**: Cryptographically verify Ed25519 provider signatures on 1Click / NEAR Intents shielded funding quotes before admitting copy-trading mandates.
+- **Expose via MCP**: Serve live option chains, volatility smiles, spread quotes, and unsigned NEAR transaction payloads to any AI agent harness over the Model Context Protocol (`mcp/index.mjs`).
 
 <p align="center">
-  <img src="./docs/assets/architecture.svg" alt="Optionality Adapter Architecture" width="900" />
+  <img src="./docs/assets/architecture.png" alt="Optionality Adapter Architecture" width="900" />
 </p>
 
 ---
@@ -55,7 +55,7 @@ It enables developers and agents to:
 ## How It Works & Agent MCP Walkthrough
 
 <p align="center">
-  <img src="./docs/assets/ontology-graph.svg" alt="Optionality Semantic Ontology" width="900" />
+  <img src="./docs/assets/ontology-graph.png" alt="Optionality Semantic Ontology" width="900" />
 </p>
 
 When an AI agent connects to Optionality through [`mcp/index.mjs`](./mcp/index.mjs), it queries certified ontology measures rather than guessing contract arguments:
@@ -83,7 +83,7 @@ Measures:
 
 ```text
 Agent -> MCP tool: plan_action({ type: "buy", asset: "BTC", kind: "Call", strike: 85000, expiry: "1700000000000000000", quantity: 2 })
-Error:   Refused before signing — series has already passed its accept_until_ns window.
+Error:   Refused before signing: series has already passed its accept_until_ns window.
          Use list_expiries to select an active open series.
 ```
 
@@ -109,8 +109,8 @@ Error:   Refused before signing — series has already passed its accept_until_n
 ### 1. Clone & Run the 96-Test Verification Suite
 
 ```bash
-git clone https://github.com/OptionalityHQ/adapter.git
-cd adapter
+git clone https://github.com/OptionalityHQ/optionality-adapter.git
+cd optionality-adapter
 npm install
 npm test
 ```
@@ -156,9 +156,9 @@ node api/src/server.ts --session data/chain-session.json --port 8790
 
 ## Documentation Index
 
-- [`docs/ONTOLOGY.md`](./docs/ONTOLOGY.md) — Certified Domain Ontology (Questions, Terms, Relationships, and Mathematical Measures)
-- [`docs/01-overview-and-gap-analysis.md`](./docs/01-overview-and-gap-analysis.md) — Protocol overview & market design
-- [`docs/02-theoretical-framework.md`](./docs/02-theoretical-framework.md) — Bounded spread payoff & Black-Scholes math
-- [`docs/06-threat-model.md`](./docs/06-threat-model.md) — Security invariants & adversarial threat model
-- [`docs/09-runbook.md`](./docs/09-runbook.md) — Operator runbook & HTTP route table
-- [`docs/10-private-copy-trading-tee.md`](./docs/10-private-copy-trading-tee.md) — Confidential copy trading & 1Click Intents specification
+- [`docs/ONTOLOGY.md`](./docs/ONTOLOGY.md): Certified Domain Ontology (Questions, Terms, Relationships, and Mathematical Measures)
+- [`docs/01-overview-and-gap-analysis.md`](./docs/01-overview-and-gap-analysis.md): Protocol overview & market design
+- [`docs/02-theoretical-framework.md`](./docs/02-theoretical-framework.md): Bounded spread payoff & Black-Scholes math
+- [`docs/06-threat-model.md`](./docs/06-threat-model.md): Security invariants & adversarial threat model
+- [`docs/09-runbook.md`](./docs/09-runbook.md): Operator runbook & HTTP route table
+- [`docs/10-private-copy-trading-tee.md`](./docs/10-private-copy-trading-tee.md): Confidential copy trading & 1Click Intents specification
