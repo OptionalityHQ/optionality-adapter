@@ -312,7 +312,10 @@ export async function gatherState(input: GatherInput): Promise<StatePayload> {
   const marksBySeries: Record<number, { mark: number; exitValue: number | null; bid: number | null }> = {};
   for (const rows of byHolder.values()) {
     for (const position of rows) {
-      const model = marksByCell[`${position.kind}|${seriesStrike(position)}`];
+      const strikeVal = seriesStrike(position);
+      const model =
+        marksByCell[`${position.kind}|${strikeVal}`] ??
+        input.marks.side(position.asset, position.kind, strikeVal);
       if (!model) continue;
       const quoted = prices[position.seriesId];
       marksBySeries[position.seriesId] = {

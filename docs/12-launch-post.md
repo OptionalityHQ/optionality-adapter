@@ -1,4 +1,4 @@
-# Introducing Optionality: Bounded Options & Private Copy Trading on NEAR
+# Introducing Optionality: No-Slippage, Zero-Liquidation Options & Private Copy Trading on NEAR
 
 > **Live on NEAR Testnet:** [`options.sable-knee.testnet`](https://testnet.nearblocks.io/address/options.sable-knee.testnet) · **Collateral Token:** [`token.sable-knee.testnet`](https://testnet.nearblocks.io/address/token.sable-knee.testnet) · **Oracle Committee:** [`oracle.sable-knee.testnet`](https://testnet.nearblocks.io/address/oracle.sable-knee.testnet)
 > **TEE Hardware Attestation:** Verified on-chain via OutLayer ([`tx 6atRSizseGRViNshcrYipt3oBmi8uwetYxZRxAgoHNc1`](https://testnet.nearblocks.io/txns/6atRSizseGRViNshcrYipt3oBmi8uwetYxZRxAgoHNc1))

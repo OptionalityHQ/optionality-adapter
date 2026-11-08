@@ -11,7 +11,7 @@ test("copy-trading models and endpoints provide full leaderboard and copy workfl
 
   const account = "user-copy-qa.testnet";
   const mandate = createOrUpdateMandate(account, {
-    profileId: "trader-delta-neutral",
+    profileId: "trader-kaito",
     maxContracts: 3,
     maxEachUsd: 75,
     maxTotalUsd: 400,
@@ -19,20 +19,20 @@ test("copy-trading models and endpoints provide full leaderboard and copy workfl
   });
 
   assert.equal(mandate.account, account);
-  assert.equal(mandate.profileId, "trader-delta-neutral");
+  assert.equal(mandate.profileId, "trader-kaito");
   assert.equal(mandate.maxContracts, 3);
   assert.equal(mandate.maxTotalUsd, 400);
   assert.equal(mandate.active, true);
 
   const userMandates = getUserMandates(account);
-  assert.ok(userMandates.some((m) => m.profileId === "trader-delta-neutral" && m.active));
+  assert.ok(userMandates.some((m) => m.profileId === "trader-kaito" && m.active));
 
   const journal = getCopyJournal(account);
   assert.ok(journal.length > 0);
   assert.equal(journal[0].action, "Auto-Buy");
 
-  const revoked = revokeMandate(account, "trader-delta-neutral");
+  const revoked = revokeMandate(account, "trader-kaito");
   assert.equal(revoked, true);
   const updated = getUserMandates(account);
-  assert.equal(updated.find((m) => m.profileId === "trader-delta-neutral")?.active, false);
+  assert.equal(updated.find((m) => m.profileId === "trader-kaito")?.active, false);
 });

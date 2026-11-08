@@ -1253,7 +1253,14 @@ export function marksFromEngine(rows: Array<{ strike: number; put: LadderSide | 
  * scripted client sends no `Origin` and is judged on `Host` alone; a browser
  * has to show it came from the page this venue serves.
  */
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const LOOPBACK = new Set([
+  "127.0.0.1",
+  "localhost",
+  "[::1]",
+  "optionality.pro",
+  "www.optionality.pro",
+  "45.76.181.201",
+]);
 
 function hostOf(value: string): string {
   return value.replace(/:\d+$/, "");

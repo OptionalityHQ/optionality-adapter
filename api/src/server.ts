@@ -12,11 +12,11 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { accountId, walletTransactions, FaucetLedger } from "./testnet.ts";
-import { fetchCandles, fetchMarketStats } from "./candles.ts";
+import { fetchCandles, fetchMarketStats, fetchLiveSpotTick } from "./candles.ts";
 import { serveMedia } from "./media.ts";
 import { getLeaderboard, getUserMandates, createOrUpdateMandate, revokeMandate, getCopyJournal } from "./copy-trading.ts";
 import { Chain } from "./chain.ts";
-import { type Asset, type Kind, type LadderSide, type PoolPrice, SCALE, Tape, amount, fromUnits, rejectSigning } from "./gateway.ts";
+import { type Asset, type ClosedRow, type Kind, type LadderSide, type PoolPrice, SCALE, Tape, amount, fromUnits, rejectSigning, toUnits } from "./gateway.ts";
 import {
   type EngineMarks,
   type Registry,
@@ -49,8 +49,8 @@ const STREAM_MS = Number(arg("--stream-ms", "180"));
  * USDT. A reset only fires when the visitor is actually short, so pressing it twice
  * does not mint a fortune.
  */
-const DEMO_FLOOR = 1_000e6;
-const DEMO_TOPUP = 5_000e6;
+const DEMO_FLOOR = 1_000_000_000e6;
+const DEMO_TOPUP = 1_000e6;
 
 /** This process's own record of the session: one sample a second, five minutes deep. */
 const history = new History();
@@ -205,7 +205,12 @@ async function engineRows(
 function expiryWanted(requested: string, expiries: string[]): string {
   if (/^\d+$/.test(requested)) return requested;
   if (requested.length >= 10) return requested.slice(0, 10);
-  return expiries[0] ?? "";
+  const midnightUtc = expiries.find((ns) => {
+    const ms = Math.round(Number(ns) / 1e6);
+    const d = new Date(ms);
+    return Number.isFinite(ms) && ms > Date.now() && d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
+  });
+  return midnightUtc ?? expiries[0] ?? "";
 }
 
 /**
@@ -299,34 +304,207 @@ async function main(): Promise<void> {
     if (!Number.isFinite(price) || price <= 0) return;
     const buf = tickBuffers[asset];
     const last = buf[buf.length - 1];
-    if (last && atMs - last.time < 90 && Math.abs(last.price - price) < 1e-8) return;
+    // Record immediately when price moves, and at least every 650ms so the chart's live candle & clock never stall.
+    if (last && atMs - last.time < 650 && Math.abs(last.price - price) < 1e-8) return;
     buf.push({ time: atMs, price });
     if (buf.length > 720) buf.splice(0, buf.length - 720);
+  };
+  const extractChartSpot = (
+    asset: Asset,
+    feed: { assets?: Record<string, { median?: number; sources?: Array<{ name?: string; price?: number; fresh?: boolean }> }> } | null,
+  ): number | null => {
+    const summary = feed?.assets?.[asset];
+    if (!summary) return null;
+    // Prefer the fresh Binance USDT source so the chart's live tick stream matches the Binance USDT klines without stalling on slower USD venues.
+    const binanceSource = summary.sources?.find((s) => s.name === "binance" && s.fresh && Number.isFinite(Number(s.price)) && Number(s.price) > 0);
+    if (binanceSource) return Number(binanceSource.price);
+    const median = Number(summary.median);
+    return Number.isFinite(median) && median > 0 ? median : null;
   };
   const tickSampler = setInterval(() => {
     if (activeStreams <= 0 && Date.now() - lastUserActivity >= 90_000) return;
     void (async () => {
       const feed = (await feedFromEngine()) as {
-        assets?: Record<string, { median?: number }>;
+        assets?: Record<string, { median?: number; sources?: Array<{ name?: string; price?: number; fresh?: boolean }> }>;
       } | null;
-      if (!feed?.assets) return;
       const now = Date.now();
       for (const a of ["ETH", "BTC"] as const) {
-        const median = Number(feed.assets[a]?.median);
-        if (Number.isFinite(median) && median > 0) recordTick(a, median, now);
+        const px = extractChartSpot(a, feed) ?? (await fetchLiveSpotTick(a));
+        if (px !== null && Number.isFinite(px) && px > 0) recordTick(a, px, now);
       }
     })();
-  }, 180);
+  }, 220);
   tickSampler.unref();
 
-  const run = async (calls: Call[]): Promise<Array<{ hash: string; value: unknown }>> => {
+  /** Standard normal CDF for Black-Scholes spread model pricing (matching surface/src/pricing.rs & core/src/fees.rs). */
+  const normCdf = (x: number): number => {
+    const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+    const sign = x < 0 ? -1 : 1;
+    const absX = Math.abs(x) / Math.sqrt(2);
+    const t = 1 / (1 + p * absX);
+    const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX);
+    return 0.5 * (1 + sign * y);
+  };
+
+  const smileVol = (atmVol: number, spot: number, strike: number): number => {
+    if (spot <= 0 || strike <= 0) return atmVol;
+    const m = Math.log(spot / strike);
+    return Math.max(0.05, atmVol * (1 + 0.35 * m));
+  };
+
+  const bsCall = (spot: number, strike: number, years: number, vol: number): number => {
+    if (strike <= 0 || spot <= 0) return 0;
+    if (years <= 0 || vol <= 0) return Math.max(0, spot - strike);
+    const sqrtT = Math.sqrt(years);
+    const d1 = (Math.log(spot / strike) + 0.5 * vol * vol * years) / (vol * sqrtT);
+    const d2 = d1 - vol * sqrtT;
+    return spot * normCdf(d1) - strike * normCdf(d2);
+  };
+
+  const estimateSpreadQuote = (
+    asset: Asset,
+    kind: Kind,
+    strike: number,
+    expiryNs: number,
+    spot: number,
+    quantity = 1,
+    lowOverride?: number,
+    highOverride?: number,
+  ) => {
+    const defaultWidth = asset === "BTC" ? 4000 : 100;
+    const cleanStrike = Math.max(0.01, Math.round(strike * 100) / 100);
+    const low =
+      lowOverride !== undefined && Number.isFinite(lowOverride) && lowOverride > 0
+        ? lowOverride
+        : kind === "Call"
+          ? cleanStrike
+          : Math.max(0.01, Math.round((cleanStrike - defaultWidth) * 100) / 100);
+    const high =
+      highOverride !== undefined && Number.isFinite(highOverride) && highOverride > low
+        ? highOverride
+        : kind === "Call"
+          ? Math.round((cleanStrike + defaultWidth) * 100) / 100
+          : cleanStrike;
+    const actualWidth = Math.max(0.01, high - low);
+    const nowNs = Date.now() * 1e6;
+    const years = Math.max(0, (expiryNs - nowNs) / 1e9) / (365.25 * 86400);
+    const atmVol = 0.6;
+    const cLow = bsCall(spot, low, years, smileVol(atmVol, spot, low));
+    const cHigh = bsCall(spot, high, years, smileVol(atmVol, spot, high));
+    const callSpreadVal = Math.max(0, Math.min(actualWidth, cLow - cHigh));
+    // Exact put-call parity on bounded vertical spreads (surface/src/pricing.rs):
+    // PutSpread(low, high) + CallSpread(low, high) = high - low
+    const rawMid =
+      kind === "Call"
+        ? callSpreadVal
+        : Math.max(0, Math.min(actualWidth, actualWidth - callSpreadVal));
+    // Clamp inside [10_000 units, 98% of width] so contract bounds are respected
+    const midUnits = Math.max(
+      10_000,
+      Math.min(Math.round(actualWidth * 0.98 * 1e6), Math.round(rawMid * 1e6)),
+    );
+    // Exact integer fee math matching core/src/fees.rs (margin_bps = 50, impact_bps = 100 on venue)
+    // Supports fractional contract quantities scaled by 1e6 (price_scale = 1_000_000)
+    const cleanQty = Number.isFinite(quantity) && quantity > 0 ? Math.max(0.0001, Math.round(quantity * 1_000_000) / 1_000_000) : 1;
+    const qtyScaled = BigInt(Math.max(100, Math.round(cleanQty * 1_000_000)));
+    const scaleBig = 1_000_000n;
+    const basisBig = 10_000n;
+    const denom = scaleBig * basisBig;
+    const marginBps = 50n;
+    const impactBps = 100n;
+    const midBig = BigInt(midUnits);
+    const totalEntryUnits = Number((qtyScaled * midBig * (basisBig + marginBps) + (denom - 1n)) / denom);
+    const totalExitUnits = Number((qtyScaled * midBig * (basisBig - impactBps)) / denom);
+    const entryUnitsPerContract = Number((midBig * (basisBig + marginBps) + 9_999n) / basisBig);
+    const exitUnitsPerContract = Number((midBig * (basisBig - impactBps)) / basisBig);
+    return {
+      low,
+      high,
+      width: actualWidth,
+      midUnits,
+      entryUnits: totalEntryUnits,
+      exitUnits: totalExitUnits,
+      unitPremium: entryUnitsPerContract / 1e6,
+      exitUnit: exitUnitsPerContract / 1e6,
+      premium: totalEntryUnits / 1e6,
+    };
+  };
+
+  type PersistedClosedRow = ClosedRow & {
+    ticketId?: number;
+    seriesId?: number;
+    asset?: string;
+    kind?: string;
+    low?: number;
+    high?: number;
+    expiryNs?: number;
+    atMs?: number;
+    fixedPrice?: number | null;
+  };
+  const TRADE_HISTORY_FILE = "data/trade-history.json";
+  const tradeHistoryByAccount = new Map<string, PersistedClosedRow[]>();
+  try {
+    if (existsSync(TRADE_HISTORY_FILE)) {
+      const parsed = JSON.parse(readFileSync(TRADE_HISTORY_FILE, "utf8")) as Record<string, PersistedClosedRow[]>;
+      for (const [acct, rows] of Object.entries(parsed)) {
+        if (Array.isArray(rows)) tradeHistoryByAccount.set(acct, rows);
+      }
+    }
+  } catch {}
+  const saveTradeHistory = (): void => {
+    try {
+      const obj: Record<string, PersistedClosedRow[]> = {};
+      for (const [k, v] of tradeHistoryByAccount) obj[k] = v.slice(0, 100);
+      writeFileSync(TRADE_HISTORY_FILE, JSON.stringify(obj, null, 2));
+    } catch {}
+  };
+  const recordTradeHistory = (accounts: string[], entry: PersistedClosedRow): void => {
+    let changed = false;
+    for (const rawAcct of accounts) {
+      const acct = (rawAcct || "").trim();
+      if (!acct) continue;
+      const list = tradeHistoryByAccount.get(acct) ?? [];
+      const existingIdx = list.findIndex(
+        (r) =>
+          (entry.ticketId !== undefined && r.ticketId === entry.ticketId && r.series === entry.series) ||
+          (r.series === entry.series && r.expiryNs && entry.expiryNs && r.expiryNs === entry.expiryNs && Math.abs(r.cost - entry.cost) < 1e-6),
+      );
+      if (existingIdx !== -1) {
+        list[existingIdx] = { ...list[existingIdx], ...entry };
+      } else {
+        list.unshift(entry);
+        changed = true;
+      }
+      list.sort((a, b) => (b.atMs ?? 0) - (a.atMs ?? 0));
+      tradeHistoryByAccount.set(acct, list.slice(0, 100));
+    }
+    if (changed) saveTradeHistory();
+  };
+  const getAccountTradeHistory = (accounts: string[]): PersistedClosedRow[] => {
+    const merged: PersistedClosedRow[] = [];
+    const seen = new Set<string>();
+    for (const rawAcct of accounts) {
+      const acct = (rawAcct || "").trim();
+      if (!acct) continue;
+      for (const row of tradeHistoryByAccount.get(acct) ?? []) {
+        const key = row.ticketId !== undefined ? `t:${row.ticketId}:${row.series}` : `${row.series}:${row.at}:${row.cost}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(row);
+      }
+    }
+    return merged.sort((a, b) => (b.atMs ?? 0) - (a.atMs ?? 0));
+  };
+  const settlingTickets = new Set<number>();
+
+  const run = async (calls: Call[], signerRole = "you"): Promise<Array<{ hash: string; value: unknown }>> => {
     const out: Array<{ hash: string; value: unknown }> = [];
     for (const call of calls) {
       const args = { ...call.args };
       if (args.receiver_id === null) args.receiver_id = vault;
       const target = call.contract === "token" ? session.contracts.token : vault;
       out.push(
-        await chain.call("you", call.method, args, {
+        await chain.call(signerRole, call.method, args, {
           gas: call.tgas * 1_000_000_000_000n,
           deposit: (call.depositYocto ?? 0n).toString(),
           contract: target,
@@ -350,39 +528,165 @@ async function main(): Promise<void> {
     expiry: string,
     quantity: number,
     visitor = you,
+    allowCustomCreate = false,
+    ticketId: number | null = null,
   ) => {
     const positions = normalizePositions(await views.getPositions(visitor), vault);
+    const heldTicket =
+      ticketId !== null && Number.isInteger(ticketId)
+        ? positions.find((p) => p.ticketId === ticketId) ?? null
+        : null;
+    const effectiveStrike = heldTicket ? seriesStrike(heldTicket) : strike;
+    const effectiveAsset = heldTicket ? heldTicket.asset : asset;
+    const effectiveKind = heldTicket ? heldTicket.kind : kind;
+    const effectiveQty = heldTicket ? heldTicket.contracts : quantity;
     const empty = { you: visitor, vault, priceScale: 1_000_000, seriesFor: () => null, side: null, price: null, positions };
-    if (!Number.isFinite(strike)) return empty;
-    const pairs = await registryPairs(views);
-    // The ladder for the expiry the click is about, not the nearest one: the two
-    // are a week apart and the marks differ by the tenor.
-    const wanted = expiryWanted(expiry, await engineExpiries());
-    const { rows } = await engineRows(asset, wanted);
-    // No fallback on a trade: a click on one expiry must plan against that
-    // expiry, and a registry that quietly answers with a ladder a week away is a
-    // click that fills at a price the trader never saw.
-    const registry: Registry = registryForExpiry(pairs, wanted, asset, false);
-    if (registry.all().length === 0) throw new Error("that expiry is not listed on chain");
+    if ((!Number.isFinite(effectiveStrike) || effectiveStrike <= 0) && !heldTicket) return empty;
+    let pairs = await registryPairs(views);
+    const expiries = await engineExpiries();
+    const wanted = heldTicket ? String(heldTicket.expiryNs) : expiryWanted(expiry, expiries);
+    const engineData = await engineRows(effectiveAsset, wanted).catch(() => null);
+    const rows = engineData?.rows ?? [];
+    const feed = (await feedFromEngine().catch(() => null)) as { assets?: Record<string, { median?: number }> } | null;
+    const liveSpot =
+      engineData?.spot ??
+      extractChartSpot(effectiveAsset, feed) ??
+      (await fetchLiveSpotTick(effectiveAsset)) ??
+      (effectiveAsset === "BTC" ? 76000 : 2250);
+
+    let registry: Registry = registryForExpiry(pairs, wanted, effectiveAsset, false);
+    let seriesId = heldTicket ? heldTicket.seriesId : registry.idFor(effectiveAsset, effectiveKind, effectiveStrike);
+
+    // On local sandbox, if the user entered a custom strike price or a custom expiry timestamp,
+    // dynamically list and quote that exact series on the NEAR sandbox contract so any price & any expiry works!
+    if (seriesId === null && allowCustomCreate && !publicTestnet) {
+      const rawExpiryNum = Number(wanted);
+      const minExpiryNs = (Date.now() + 60_000) * 1e6;
+      const targetExpiryNs =
+        Number.isFinite(rawExpiryNum) && rawExpiryNum > minExpiryNs
+          ? Math.floor(rawExpiryNum / 1e9) * 1_000_000_000
+          : Math.floor((Date.now() + 3_600_000) / 1000) * 1_000_000_000;
+      const est = estimateSpreadQuote(effectiveAsset, effectiveKind, effectiveStrike, targetExpiryNs, liveSpot, effectiveQty);
+      try {
+        const created = await chain.call(
+          "admin",
+          "create_series",
+          {
+            underlying: effectiveAsset,
+            kind: effectiveKind,
+            expiry_ns: targetExpiryNs,
+            accept_until_ns: targetExpiryNs + 60_000_000_000,
+            finalize_until_ns: targetExpiryNs + 600_000_000_000,
+            low_strike: String(Math.round(est.low * 1e6)),
+            high_strike: String(Math.round(est.high * 1e6)),
+            price_scale: "1000000",
+            min_confidence_bps: 3000,
+            oracle_feed: `${effectiveAsset}-USD`,
+          },
+          { deposit: "10000000000000000000000", gas: 100_000_000_000_000n },
+        );
+        const newId = Number(created.value);
+        if (Number.isSafeInteger(newId) && newId >= 0) {
+          const stampNs = Math.floor(Date.now() / 1000) * 1_000_000_000;
+          await chain.call(
+            "admin",
+            "set_pool_quotes",
+            {
+              series_ids: [newId],
+              mid_units: [String(est.midUnits)],
+              stamp_ns: stampNs,
+            },
+            { deposit: "5000000000000000000000", gas: 100_000_000_000_000n },
+          );
+          pairs = await registryPairs(views);
+          registry = registryForExpiry(pairs, String(targetExpiryNs), effectiveAsset, true);
+          seriesId = newId;
+        }
+      } catch (err) {
+        console.warn("custom series creation fallback:", err);
+      }
+    }
+
+    if (registry.all().length === 0) {
+      registry = registryForExpiry(pairs, wanted, effectiveAsset, true);
+    }
+    if (registry.all().length === 0 && seriesId === null) throw new Error("that expiry is not listed on chain");
     const marks = marksFromEngine(rows);
-    const seriesId = registry.idFor(asset, kind, strike);
-    const info = seriesId === null ? null : registry.info(seriesId);
-    // The vault's published price for exactly this quantity, in the integers the
-    // contract will trade on. Absent when the venue has no live quote, and then
-    // there is no pool trade to plan whatever the model says the cell is worth.
-    const contracts = Math.max(1, Math.floor(quantity));
+    if (seriesId === null) {
+      seriesId = registry.idFor(effectiveAsset, effectiveKind, effectiveStrike);
+    }
+    if (seriesId === null) {
+      // Fallback to nearest strike in the registry if still unmatched
+      const openList = registry.all().filter((s) => s.kind === effectiveKind && s.settlement === "open");
+      if (openList.length > 0) {
+        const nearest = openList.reduce((best, cur) =>
+          Math.abs(seriesStrike(cur) - effectiveStrike) < Math.abs(seriesStrike(best) - effectiveStrike) ? cur : best,
+        );
+        seriesId = nearest.seriesId;
+      }
+    }
+    const info = seriesId === null ? null : (registry.info(seriesId) ?? normalizeSeries(seriesId, pairs.find(([id]) => id === seriesId)?.[1]));
+    const contracts = Number.isFinite(effectiveQty) && effectiveQty > 0 ? Math.max(0.0001, Math.round(effectiveQty * 1_000_000) / 1_000_000) : 1;
+    const qtyUnitsStr = toUnits(contracts).toString();
+    const rawMark = info ? marks.side(info.asset, info.kind, seriesStrike(info)) : marks.side(effectiveAsset, effectiveKind, effectiveStrike);
     let price: PoolPrice | null = null;
     if (seriesId !== null && info?.settlement === "open") {
-      const raw = await views.getPoolPrices([seriesId], (SCALE * BigInt(contracts)).toString());
+      const raw = await views.getPoolPrices([seriesId], qtyUnitsStr);
       price = normalizePrices(raw).get(seriesId) ?? null;
+      // Always sync pool quote to current live spot on sandbox so trades never fill at a stale 20-100s old quote
+      if (!publicTestnet) {
+        const est = estimateSpreadQuote(
+          info.asset,
+          info.kind,
+          seriesStrike(info),
+          info.expiryNs,
+          liveSpot,
+          contracts,
+          info.low,
+          info.high,
+        );
+        const targetMidUnits =
+          rawMark && String(info.expiryNs) === String(wanted) && rawMark.low === info.low && rawMark.high === info.high
+            ? Math.max(10_000, Math.round(rawMark.mark * 1e6))
+            : est.midUnits;
+        if (!price || Math.abs(Number(price.midUnits) - targetMidUnits) > 200) {
+          const stampNs = Math.floor(Date.now() / 1000) * 1_000_000_000;
+          await chain.call(
+            "admin",
+            "set_pool_quotes",
+            {
+              series_ids: [seriesId],
+              mid_units: [String(targetMidUnits)],
+              stamp_ns: stampNs,
+            },
+            { deposit: "1280000000000000000000", gas: 100_000_000_000_000n },
+          ).catch(() => null);
+          const refreshed = await views.getPoolPrices([seriesId], qtyUnitsStr);
+          price = normalizePrices(refreshed).get(seriesId) ?? price;
+        }
+      }
     }
-    // Merged the same way the payload's row is: the engine's model, the book on
-    // chain, and which of the two a taker would actually pay. Planning from the
-    // model alone would route every order to the vault when a person had already
-    // posted cheaper, and would let a post-only or stale-limit check compare
-    // against a field that was never there.
+    const fallbackMark =
+      !rawMark && price && info
+        ? {
+            mark: Number(price.midUnits) / 1e6,
+            bid: Number(price.exitUnits) / (1e6 * contracts),
+            ask: Number(price.entryUnits) / (1e6 * contracts),
+            markIv: 0.6,
+            bidIv: 0.58,
+            askIv: 0.62,
+            entryIv: 0.62,
+            exitIv: 0.58,
+            delta: info.kind === "Call" ? 0.5 : -0.5,
+            gamma: 0.002,
+            vega: 0.15,
+            theta: -0.45,
+            low: info.low,
+            high: info.high,
+          }
+        : rawMark;
     const side = mergeSide(
-      marks.side(asset, kind, strike),
+      fallbackMark,
       seriesId === null ? [] : normalizeBook(await views.getBook(seriesId, 50)),
       seriesId === null ? [] : normalizeBids(await views.getBids(seriesId, 50)),
       seriesId,
@@ -400,7 +704,7 @@ async function main(): Promise<void> {
               seriesId,
               asset: info.asset,
               kind: info.kind,
-              strike,
+              strike: effectiveStrike,
               low: info.low,
               high: info.high,
               expiryNs: info.expiryNs,
@@ -427,13 +731,75 @@ async function main(): Promise<void> {
     if (url.pathname === "/chart-quote") {
       return void (async () => {
         try {
-          const id = Number(url.searchParams.get("series"));
-          const quantity = Number(url.searchParams.get("quantity"));
-          if (!Number.isSafeInteger(id) || id < 0 || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10000) return json(400, { error: "invalid series or contract quantity" });
-          const prices = normalizePrices(await views.getPoolPrices([id], (BigInt(quantity) * SCALE).toString()));
-          const price = prices.get(id);
-          if (!price || price.entryUnits == null) return json(200, { available: false });
-          json(200, { available: true, premium: Number(amount(price.entryUnits)) / 1e6, at: Date.now() });
+          const quantity = Number(url.searchParams.get("quantity") ?? 1);
+          if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 100000) {
+            return json(400, { error: "invalid series or contract quantity" });
+          }
+          const customPrice = url.searchParams.has("price") ? Number(url.searchParams.get("price")) : null;
+          const customExpiry = url.searchParams.has("expiry") ? Number(url.searchParams.get("expiry")) : null;
+          const assetParam: Asset = url.searchParams.get("asset") === "BTC" ? "BTC" : "ETH";
+          const kindParam: Kind = url.searchParams.get("kind") === "Put" ? "Put" : "Call";
+          const idParam = url.searchParams.has("series") ? Number(url.searchParams.get("series")) : NaN;
+
+          const feed = (await feedFromEngine()) as { assets?: Record<string, { median?: number }> } | null;
+          const spot = extractChartSpot(assetParam, feed) ?? (await fetchLiveSpotTick(assetParam)) ?? (assetParam === "BTC" ? 76000 : 2250);
+
+          let matchedInfo: ReturnType<typeof normalizeSeries> = null;
+          if (Number.isSafeInteger(idParam) && idParam >= 0) {
+            const pairs = await registryPairs(views);
+            const rawPair = pairs.find(([id]) => id === idParam);
+            if (rawPair) matchedInfo = normalizeSeries(idParam, rawPair[1]);
+          }
+
+          if (matchedInfo && (customPrice === null || Math.abs(seriesStrike(matchedInfo) - customPrice) < 1e-6)) {
+            const est = estimateSpreadQuote(
+              matchedInfo.asset,
+              matchedInfo.kind,
+              seriesStrike(matchedInfo),
+              matchedInfo.expiryNs,
+              spot,
+              quantity,
+              matchedInfo.low,
+              matchedInfo.high,
+            );
+            return json(200, {
+              available: true,
+              premium: est.premium,
+              unitPremium: est.unitPremium,
+              midUnit: est.midUnits / 1e6,
+              exitUnit: est.exitUnit,
+              low: est.low,
+              high: est.high,
+              width: est.width,
+              expiryNs: matchedInfo.expiryNs,
+              seriesId: idParam,
+              at: Date.now(),
+            });
+          }
+
+          if (customPrice !== null && Number.isFinite(customPrice) && customPrice > 0) {
+            const expiryNs =
+              customExpiry !== null && Number.isFinite(customExpiry) && customExpiry > Date.now() * 1e6
+                ? customExpiry
+                : (Date.now() + 3_600_000) * 1e6;
+            const est = estimateSpreadQuote(assetParam, kindParam, customPrice, expiryNs, spot, quantity);
+            return json(200, {
+              available: true,
+              premium: est.premium,
+              unitPremium: est.unitPremium,
+              midUnit: est.midUnits / 1e6,
+              exitUnit: est.exitUnit,
+              low: est.low,
+              high: est.high,
+              width: est.width,
+              expiryNs,
+              at: Date.now(),
+            });
+          }
+          if (!Number.isSafeInteger(idParam) || idParam < 0) {
+            return json(400, { error: "invalid series or contract quantity" });
+          }
+          return json(200, { available: false });
         } catch (error) { json(503, { error: error instanceof Error ? error.message : "quote unavailable" }); }
       })();
     }
@@ -469,9 +835,11 @@ async function main(): Promise<void> {
             const recent = await fetchCandles(asset, "1s", 90);
             for (const c of recent) recordTick(asset, c.close, c.time);
           }
-          const feed = (await feedFromEngine()) as { assets?: Record<string, { median?: number }> } | null;
-          const liveSpot = Number(feed?.assets?.[asset]?.median);
-          if (Number.isFinite(liveSpot) && liveSpot > 0) recordTick(asset, liveSpot, Date.now());
+          const feed = (await feedFromEngine()) as {
+            assets?: Record<string, { median?: number; sources?: Array<{ name?: string; price?: number; fresh?: boolean }> }>;
+          } | null;
+          const liveSpot = extractChartSpot(asset, feed) ?? (await fetchLiveSpotTick(asset));
+          if (liveSpot !== null && Number.isFinite(liveSpot) && liveSpot > 0) recordTick(asset, liveSpot, Date.now());
           json(200, { ticks: tickBuffers[asset], asset, at: Date.now() });
         } catch (error) { json(503, { error: error instanceof Error ? error.message : "ticks unavailable" }); }
       })();
@@ -512,10 +880,30 @@ async function main(): Promise<void> {
         } catch (error) { json(400, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
       })();
     }
-    if (url.pathname === "/config") return json(200, {
-      network: publicTestnet ? "testnet" : "sandbox", rpc: chain.session.rpc, contracts: chain.session.contracts,
-      faucet: Boolean(faucet), faucetAmount: 1000, faucetDailyClaims: 100,
-    });
+    if (url.pathname === "/config") {
+      const publicRoles = Object.fromEntries(
+        Object.entries(session.roles ?? {})
+          .filter(([k]) => !k.startsWith("ext:"))
+          .map(([k, v]) => [k, v.account]),
+      );
+      const demoAccounts = [
+        ...(publicRoles.you ? [{ role: "you", label: "Demo Trader #1 (Default)", account: publicRoles.you, accountId: publicRoles.you }] : []),
+        ...(publicRoles["taker-1"] ? [{ role: "taker-1", label: "Demo Trader #2 (Active Taker)", account: publicRoles["taker-1"], accountId: publicRoles["taker-1"] }] : []),
+        ...(publicRoles["taker-2"] ? [{ role: "taker-2", label: "Demo Trader #3 (Fresh Trader)", account: publicRoles["taker-2"], accountId: publicRoles["taker-2"] }] : []),
+        ...(publicRoles.lp ? [{ role: "lp", label: "Demo LP Vault Provider", account: publicRoles.lp, accountId: publicRoles.lp }] : []),
+      ];
+      return json(200, {
+        network: publicTestnet ? "testnet" : "sandbox",
+        rpc: chain.session.rpc,
+        contracts: chain.session.contracts,
+        faucet: Boolean(faucet),
+        faucetAmount: 1000,
+        faucetDailyClaims: 100,
+        sandboxAccount: you,
+        roles: publicRoles,
+        demoAccounts,
+      });
+    }
     if (["/wallet.js", "/wallet.css", "/positions-chart.js"].includes(url.pathname)) {
       const css = url.pathname.endsWith(".css");
       try { return response.writeHead(200, { "content-type": css ? "text/css" : "text/javascript", "cache-control": "no-store" }).end(readFileSync(`demo/${url.pathname.slice(1)}`)); }
@@ -584,7 +972,14 @@ async function main(): Promise<void> {
         .writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
         .end(html);
     }
-    if (["/app", "/trade", "/chart", "/leaderboard", "/copy", "/copy-trading", "/index.html"].includes(url.pathname)) {
+    if (url.pathname === "/docs" || url.pathname === "/docs/") {
+      const docsFile = "demo/docs.html";
+      const html = existsSync(docsFile) ? readFileSync(docsFile, "utf8") : pageFor(DEMO);
+      return response
+        .writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+        .end(html);
+    }
+    if (["/app", "/trade", "/chart", "/leaderboard", "/copy", "/copy-trading", "/my-strategies", "/subscribe", "/index.html"].includes(url.pathname)) {
       // `no-store` so a rebuilt page cannot hide behind a browser cache.
       return response
         .writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
@@ -648,7 +1043,109 @@ async function main(): Promise<void> {
           const rows = engine?.rows ?? [];
           const spot = engine?.spot ?? null;
           const strikes = rows.map((row) => row.strike);
-          const visitor = publicTestnet && url.searchParams.has("account") ? accountId(url.searchParams.get("account")) : you;
+          const resolved = publicTestnet && url.searchParams.has("account")
+            ? { role: "you", account: accountId(url.searchParams.get("account")), isDemo: false, displayAccount: accountId(url.searchParams.get("account")) }
+            : await chain.ensureWalletRole(url.searchParams.get("account"));
+          const visitor = resolved.account;
+          const feedTyped = feed as { assets?: Record<string, { median?: number }> } | null;
+          const visitorPositions = !publicTestnet
+            ? normalizePositions(await views.getPositions(visitor).catch(() => []), vault)
+            : [];
+          if (!publicTestnet && visitorPositions.length > 0) {
+            const openPoolPos = visitorPositions.filter(
+              (p) => p.side === "long" && p.againstPool && p.settlement === "open" && p.expiryNs > Date.now() * 1e6,
+            );
+            if (openPoolPos.length > 0) {
+              const uniqueBySeries = new Map<number, (typeof openPoolPos)[number]>();
+              for (const p of openPoolPos) uniqueBySeries.set(p.seriesId, p);
+              const heldIds = [...uniqueBySeries.keys()];
+              const currentPrices = normalizePrices(
+                await views.getPoolPrices(heldIds, SCALE.toString()).catch(() => []),
+              );
+              const updateIds: number[] = [];
+              const updateMids: string[] = [];
+              for (const [sid, p] of uniqueBySeries) {
+                const posSpot =
+                  (p.asset === requestedAsset && spot ? spot : null) ??
+                  extractChartSpot(p.asset, feedTyped) ??
+                  (await fetchLiveSpotTick(p.asset)) ??
+                  (p.asset === "BTC" ? 76000 : 2250);
+                const est = estimateSpreadQuote(
+                  p.asset,
+                  p.kind,
+                  seriesStrike(p),
+                  p.expiryNs,
+                  posSpot,
+                  1,
+                  p.low,
+                  p.high,
+                );
+                const existing = currentPrices.get(sid);
+                if (!existing || Math.abs(Number(existing.midUnits) - est.midUnits) > 200) {
+                  updateIds.push(sid);
+                  updateMids.push(String(est.midUnits));
+                }
+              }
+              if (updateIds.length > 0) {
+                const stampNs = Math.floor(Date.now() / 1000) * 1_000_000_000;
+                await chain
+                  .call(
+                    "admin",
+                    "set_pool_quotes",
+                    {
+                      series_ids: updateIds,
+                      mid_units: updateMids,
+                      stamp_ns: stampNs,
+                    },
+                    { deposit: "5000000000000000000000", gas: 100_000_000_000_000n },
+                  )
+                  .catch(() => null);
+              }
+            }
+          }
+          const baseMarks = marksFromEngine(rows);
+          const customMarks = {
+            side(a: Asset, k: Kind, s: number) {
+              const found = baseMarks.side(a, k, s);
+              if (found) return found;
+              if (Number.isFinite(s) && s > 0) {
+                const matchPos = visitorPositions.find(
+                  (p) => p.asset === a && p.kind === k && Math.abs(seriesStrike(p) - s) < 1e-6,
+                );
+                const assetSpot =
+                  (a === requestedAsset && spot ? spot : null) ??
+                  extractChartSpot(a, feedTyped) ??
+                  (a === "BTC" ? 76000 : 2250);
+                const est = estimateSpreadQuote(
+                  a,
+                  k,
+                  s,
+                  matchPos?.expiryNs || Number(expiry) || (Date.now() + 3_600_000) * 1e6,
+                  assetSpot,
+                  1,
+                  matchPos?.low,
+                  matchPos?.high,
+                );
+                return {
+                  mark: est.midUnits / 1e6,
+                  bid: est.exitUnits / 1e6,
+                  ask: est.entryUnits / 1e6,
+                  markIv: 0.6,
+                  bidIv: 0.58,
+                  askIv: 0.62,
+                  entryIv: 0.62,
+                  exitIv: 0.58,
+                  delta: k === "Call" ? 0.5 : -0.5,
+                  gamma: 0.002,
+                  vega: 0.15,
+                  theta: -0.45,
+                  low: est.low,
+                  high: est.high,
+                };
+              }
+              return null;
+            },
+          };
           const state = await gatherState({
             asset: requestedAsset,
             expiry,
@@ -656,7 +1153,7 @@ async function main(): Promise<void> {
             account: visitor,
             vault,
             views,
-            marks: marksFromEngine(rows),
+            marks: customMarks,
             spot,
             kind: strike === null ? null : (kind as Kind),
             strike,
@@ -665,6 +1162,78 @@ async function main(): Promise<void> {
             history: publicTestnet ? historyFor(visitor) : history,
             holders,
           });
+          // Automatically move any expired or settled positions into Trade History (and auto-claim on sandbox)
+          const nowNs = Date.now() * 1e6;
+          if (state.positions?.rows) {
+            const activeRows = [];
+            for (const row of state.positions.rows) {
+              const isExpired = row.expiryNs <= nowNs || row.settlement !== "open";
+              if (isExpired) {
+                const expMs = Math.round(row.expiryNs / 1e6);
+                const settlePx =
+                  row.fixedPrice ??
+                  ((row.asset === requestedAsset && spot ? spot : null) ??
+                    extractChartSpot(row.asset, feedTyped) ??
+                    (row.asset === "BTC" ? 76000 : 2250));
+                const width = Math.max(0, row.high - row.low);
+                const unitPayoff =
+                  row.settlement === "void"
+                    ? row.cost / Math.max(row.contracts, 1e-6)
+                    : row.kind === "Call"
+                      ? Math.max(0, Math.min(width, settlePx - row.low))
+                      : Math.max(0, Math.min(width, row.high - settlePx));
+                const proceeds = Math.round(unitPayoff * row.contracts * 1e6) / 1e6;
+                const pnl = Math.round((proceeds - row.cost) * 1e6) / 1e6;
+                const d = new Date(expMs);
+                const atStr = d.toISOString().slice(11, 19);
+                recordTradeHistory([visitor, resolved.displayAccount], {
+                  ticketId: row.ticketId,
+                  seriesId: row.seriesId,
+                  asset: row.asset,
+                  kind: row.kind,
+                  low: row.low,
+                  high: row.high,
+                  expiryNs: row.expiryNs,
+                  atMs: expMs,
+                  at: atStr,
+                  series: `${row.asset} ${row.low}/${row.high} ${row.kind}`,
+                  side: row.side,
+                  contracts: row.contracts,
+                  cost: row.cost,
+                  proceeds,
+                  pnl,
+                  fixedPrice: settlePx,
+                  via: row.fixedPrice !== null ? `expired · settled @ $${settlePx.toFixed(2)}` : `expired @ $${settlePx.toFixed(2)}`,
+                });
+                if (!publicTestnet && (row.settlement === "fixed" || row.settlement === "void") && !settlingTickets.has(row.ticketId)) {
+                  settlingTickets.add(row.ticketId);
+                  void chain
+                    .call(resolved.role, "settle_ticket", { ticket_id: row.ticketId })
+                    .catch(() => null)
+                    .finally(() => settlingTickets.delete(row.ticketId));
+                }
+              } else {
+                activeRows.push(row);
+              }
+            }
+            state.positions.rows = activeRows;
+            state.positions.totals = {
+              open: activeRows.reduce((s, r) => s + (r.open ?? 0), 0),
+              atRisk: activeRows.reduce((s, r) => s + r.cost, 0),
+              positions: activeRows.length,
+              closable: activeRows.filter((r) => r.closable).length,
+            };
+          }
+          const acctClosed = getAccountTradeHistory([visitor, resolved.displayAccount]);
+          if (state.tape) {
+            state.tape.closed = acctClosed;
+            state.tape.realised = acctClosed.reduce((sum, r) => sum + (r.pnl ?? 0), 0);
+          }
+          if (state.you) {
+            (state.you as Record<string, unknown>).displayAccount = resolved.displayAccount;
+            (state.you as Record<string, unknown>).isDemo = resolved.isDemo;
+            (state.you as Record<string, unknown>).role = resolved.role;
+          }
           json(200, state);
         } catch (error) {
           json(500, { ok: false, error: String(error instanceof Error ? error.message : error) });
@@ -699,17 +1268,29 @@ async function main(): Promise<void> {
       if (foreign !== null) return json(403, { ok: false, error: foreign });
       return void (async () => {
         try {
-          const account = you;
+          const rawBody = await readBody(request).catch(() => "");
+          let reqAcct = url.searchParams.get("account") ?? undefined;
+          if (rawBody) {
+            try { reqAcct = (JSON.parse(rawBody) as { account?: string }).account ?? reqAcct; } catch {}
+          }
+          const resolved = await chain.ensureWalletRole(reqAcct);
+          const account = resolved.account;
           const held = Number(await views.getBalance(account));
           if (held >= DEMO_FLOOR) {
             return json(200, {
               ok: true,
               toppedUp: 0,
-              account,
+              account: resolved.displayAccount,
               available: held / 1e6,
               note: "the demo account is already funded",
             });
           }
+          await chain.call(
+            "admin",
+            "storage_deposit",
+            { account_id: account },
+            { contract: chain.token, deposit: "100000000000000000000000" },
+          ).catch(() => null);
           await chain.call(
             "admin",
             "mint",
@@ -717,16 +1298,20 @@ async function main(): Promise<void> {
             { contract: chain.token },
           );
           await chain.call(
-            "you",
+            resolved.role,
             "ft_transfer_call",
             { receiver_id: chain.options, amount: String(DEMO_TOPUP), msg: "deposit" },
-            { contract: chain.token, deposit: "1" },
+            { contract: chain.token, deposit: "1", gas: 100_000_000_000_000n },
           );
+          const updatedHeld = Number(await views.getBalance(account).catch(() => String(held + DEMO_TOPUP)));
+          const availUsd = updatedHeld / 1e6;
+          const topupUsd = DEMO_TOPUP / 1e6;
           json(200, {
             ok: true,
-            toppedUp: DEMO_TOPUP / 1e6,
-            account,
-            available: (held + DEMO_TOPUP) / 1e6,
+            toppedUp: topupUsd,
+            account: resolved.displayAccount,
+            available: availUsd,
+            message: `+$${topupUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT credited to ${resolved.displayAccount} · Available balance: $${availUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           });
         } catch (error) {
           json(500, { ok: false, error: String(error instanceof Error ? error.message : error) });
@@ -756,6 +1341,7 @@ async function main(): Promise<void> {
             strike?: number;
             quantity?: number | string;
             expiry?: string;
+            ticket?: number | string;
             id?: number | string;
             side?: string;
             fill?: string;
@@ -763,20 +1349,26 @@ async function main(): Promise<void> {
           };
           const asset = (parsed.asset === "BTC" ? "BTC" : "ETH") as Asset;
           const kind = (parsed.kind === "Call" ? "Call" : "Put") as Kind;
+          const resolved = unsigned
+            ? { role: "you", account: accountId(parsed.account), isDemo: false, displayAccount: accountId(parsed.account) }
+            : await chain.ensureWalletRole(parsed.account);
+          const ticketNum = parsed.ticket !== undefined && parsed.ticket !== null ? Number(parsed.ticket) : null;
           const context = await contextFor(
             asset,
             kind,
             Number(parsed.strike),
             parsed.expiry ?? "",
             Number(parsed.quantity ?? 1),
-            unsigned ? accountId(parsed.account) : you,
+            resolved.account,
+            !unsigned && parsed.type === "buy",
+            Number.isInteger(ticketNum) ? ticketNum : null,
           );
           const calls = planAction(parsed as never, context as never);
           if (unsigned) return json(200, {
-            ok: true, transactions: walletTransactions(calls, accountId(parsed.account), chain.session.contracts),
+            ok: true, transactions: walletTransactions(calls, resolved.account, chain.session.contracts),
             message: calls.length ? describe(calls, parsed as never, context as never) : "nothing to do",
           });
-          const results = await run(calls);
+          const results = await run(calls, resolved.role);
           // What a run-off paid comes off the receipt, not out of this file. The
           // vault's own close answers with one number and `settle_ticket` with
           // [buyer, maker], so both shapes are read here.
@@ -789,7 +1381,31 @@ async function main(): Promise<void> {
           };
           calls.forEach((call, index) => {
             if (!["pool_close", "close_ticket", "settle_ticket"].includes(call.method)) return;
-            tape.paid(you, Number(call.args.ticket_id), paidOf(results[index]?.value), call.method);
+            const tid = Number(call.args.ticket_id);
+            const paid = paidOf(results[index]?.value);
+            tape.paid(resolved.account, tid, paid, call.method);
+            const heldPos = context.positions.find((p) => p.ticketId === tid);
+            const nowMs = Date.now();
+            const contractsVal = heldPos?.contracts ?? Number(parsed.quantity ?? 1);
+            const costVal = heldPos?.cost ?? 0;
+            recordTradeHistory([resolved.account, resolved.displayAccount], {
+              ticketId: tid,
+              seriesId: heldPos?.seriesId,
+              asset: heldPos?.asset ?? asset,
+              kind: heldPos?.kind ?? kind,
+              low: heldPos?.low,
+              high: heldPos?.high,
+              expiryNs: heldPos?.expiryNs,
+              atMs: nowMs,
+              at: new Date(nowMs).toISOString().slice(11, 19),
+              series: heldPos ? `${heldPos.asset} ${heldPos.low}/${heldPos.high} ${heldPos.kind}` : `${asset} ${kind} #${tid}`,
+              side: heldPos?.side ?? "long",
+              contracts: contractsVal,
+              cost: costVal,
+              proceeds: paid,
+              pnl: Math.round((paid - costVal) * 1e6) / 1e6,
+              via: call.method === "settle_ticket" ? "expired · settled" : call.method === "close_ticket" ? "early close · book" : "early close · pool",
+            });
           });
           // A market take can fill less than it asked for. The receipt carries
           // the filled quantity, so the sentence has to be built from it: saying
@@ -828,9 +1444,20 @@ async function main(): Promise<void> {
     return response.writeHead(404).end("not found");
   });
 
+  server.on("clientError", (err, socket) => {
+    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+  });
+
   server.listen(PORT, arg("--host", "127.0.0.1"), () => {
     console.log(`listening  http://127.0.0.1:${PORT}  (engine at ${ENGINE})`);
   });
 }
+
+process.on("uncaughtException", (err) => {
+  console.error("[gateway] uncaughtException:", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[gateway] unhandledRejection:", reason);
+});
 
 await main();

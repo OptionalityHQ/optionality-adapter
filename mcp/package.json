@@ -1,0 +1,11 @@
+{
+  "name": "near-bounded-options-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP server for near bounded-options venue",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {}
+}

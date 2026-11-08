@@ -113,6 +113,15 @@ export function contractsOf(value: unknown): number {
   return parsed;
 }
 
+/** Supports fractional/decimal contract sizing (e.g. from arbitrary USDT amounts) down to 0.0001 contracts (6-decimal on-chain units). */
+export function sizeOf(value: unknown): number {
+  const parsed = Number(value ?? 1);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new RangeError("quantity must be at least one contract");
+  }
+  return Math.max(0.0001, Math.round(parsed * 1_000_000) / 1_000_000);
+}
+
 function requireSeries(context: Context, body: ActionBody): ResolvedSeries {
   const series = context.seriesFor(assetOf(body.asset), kindOf(body.kind), Number(body.strike));
   if (!series) throw new Error("unknown series");
@@ -158,7 +167,7 @@ function marketFloor(limit: number, contracts: number): bigint {
 function planBuy(context: Context, body: ActionBody): Call[] {
   const series = requireSeries(context, body);
   requireOpen(series);
-  const contracts = contractsOf(body.quantity);
+  const contracts = sizeOf(body.quantity);
   const limit = Number(body.limit);
   if (!Number.isFinite(limit) || limit <= 0) throw new Error("a buy needs a limit price");
   if (body.postOnly) {
@@ -263,7 +272,7 @@ function planBuy(context: Context, body: ActionBody): Call[] {
 function planSell(context: Context, body: ActionBody): Call[] {
   const series = requireSeries(context, body);
   const limit = Number(body.limit ?? 0);
-  const contracts = contractsOf(body.quantity);
+  const contracts = sizeOf(body.quantity);
   const offer = (): Call => {
     requireOpen(series);
     return {
